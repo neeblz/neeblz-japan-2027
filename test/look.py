@@ -91,19 +91,38 @@ with sync_playwright() as pw:
     left = page.locator(".cancel .left")
     want(left.count() == 5, f"обратный счёт стоит у всех пяти броней ({left.count()})")
 
-    # ── пальцем попадать: у ссылок и галочек высота не меньше 40px
+    # ── пальцем попадать: у ссылок, галочек и свёрток высота не меньше 36px.
+    #    Считаются только видимые: списки и дни лежат в свёрнутых <details>,
+    #    у них высота нулевая, и мерить её значит ловить не ту рыбу.
     small = page.evaluate("""() => {
-      const targets = [...document.querySelectorAll('.btn, .todo-group label, nav.jump a')];
+      const targets = [...document.querySelectorAll('.btn, .todo-group label, summary')];
       return targets
-        .map(el => ({ t: el.className, h: Math.round(el.getBoundingClientRect().height) }))
+        .filter(el => el.offsetParent !== null)
+        .map(el => ({ t: el.className || el.tagName, h: Math.round(el.getBoundingClientRect().height) }))
         .filter(x => x.h < 36);
     }""")
-    want(not small, f"по всем целям можно попасть пальцем (мелких: {len(small)})")
+    want(not small, f"по видимым целям можно попасть пальцем (мелких: {len(small)})"
+         + (f" — {small[:3]}" if small else ""))
+
+    # ── свёрнутое разворачивается и внутри всё на месте
+    for name in ("Решить и забронировать", "По дням", "Багаж"):
+        want(page.locator(f'summary:text-is("{name}")').count() == 1, f"свёрток «{name}» на месте")
+    page.locator('summary:text-is("По дням")').click()
+    page.wait_for_timeout(150)
 
     # ── даты: поездка начинается 4-го
     days = page.locator("#days > ol.days > li")
     want(days.count() == 16, f"дней в списке {days.count()}")
     want("4" == days.first.locator(".date b").inner_text().strip(), "первый день — 4-е")
+    want(days.first.bounding_box() is not None, "развёрнутое видно, а не спрятано")
+
+    # ── города и места из вишлиста
+    cities = page.locator(".city")
+    want(cities.count() == 4, f"карточек городов {cities.count()}")
+    wishes = page.locator(".wishes li")
+    want(wishes.count() >= 4, f"мест из вишлиста {wishes.count()}")
+    want(all("не бронь" in c for c in page.locator(".wish-cap").all_inner_texts()),
+         "у мест написано, что это не бронь")
 
     SHOTS.mkdir(exist_ok=True)
     page.screenshot(path=str(SHOTS / "japan-phone-full.png"), full_page=True)

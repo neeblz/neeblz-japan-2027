@@ -1,0 +1,74 @@
+<!doctype html><html lang="ru"><head><meta charset="utf-8"><title>Япония · три вида</title><style>
+@font-face{font-family:Prata;src:url(fonts/prata-cyr.woff2)format('woff2');unicode-range:U+0400-045F,U+0490-0491,U+04B0-04B1,U+2116;font-display:block}
+@font-face{font-family:Prata;src:url(fonts/prata-lat.woff2)format('woff2');font-display:block}
+@font-face{font-family:Golos;src:url(fonts/golos-cyr.woff2)format('woff2');font-weight:400 900;unicode-range:U+0400-045F,U+0490-0491,U+04B0-04B1,U+2116;font-display:block}
+@font-face{font-family:Golos;src:url(fonts/golos-lat.woff2)format('woff2');font-weight:400 900;font-display:block}
+@font-face{font-family:Plex;src:url(fonts/plexmono-cyr-400.woff2)format('woff2');font-weight:400;unicode-range:U+0400-045F,U+0490-0491,U+04B0-04B1,U+2116;font-display:block}
+@font-face{font-family:Plex;src:url(fonts/plexmono-lat-400.woff2)format('woff2');font-weight:400;font-display:block}
+@font-face{font-family:Plex;src:url(fonts/plexmono-cyr-500.woff2)format('woff2');font-weight:500;unicode-range:U+0400-045F,U+0490-0491,U+04B0-04B1,U+2116;font-display:block}
+@font-face{font-family:Plex;src:url(fonts/plexmono-lat-500.woff2)format('woff2');font-weight:500;font-display:block}
+
+*{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --paper:#F2EEE7; --card:#FCFAF6; --ink:#1E1B18; --mute:#8B8275;
+  --line:#E0D8CA; --hair:#EBE4D8;
+}
+html,body{height:100%}
+body{
+  background:var(--paper); color:var(--ink);
+  font-family:Golos,-apple-system,system-ui,sans-serif;
+  -webkit-font-smoothing:antialiased;
+  padding:40px 54px 34px;
+  display:flex; flex-direction:column;
+  font-size:14px; line-height:1.45;
+}
+.mono{font-family:Plex,ui-monospace,monospace;font-variant-numeric:tabular-nums}
+.hdr{display:flex;align-items:flex-end;justify-content:space-between;flex:none}
+.hdr h1{font-family:Prata;font-weight:400;font-size:46px;line-height:.95;letter-spacing:-.01em}
+.hdr .when{font-family:Plex;font-size:15px;letter-spacing:.06em;color:var(--mute);margin-top:10px}
+.hdr .when b{color:var(--ink);font-weight:500}
+.view-tag{font-family:Plex;font-size:11px;letter-spacing:.18em;text-transform:uppercase;color:var(--mute);
+  text-align:right;line-height:1.7}
+.view-tag b{display:block;color:var(--ink);font-weight:500;font-size:12px;letter-spacing:.16em}
+.rule{height:1px;background:var(--line);flex:none}
+
+/* нижняя полоса: деньги слева, непосчитанное справа */
+.foot{display:flex;align-items:flex-end;justify-content:space-between;gap:40px;flex:none}
+.total .lbl{font-family:Plex;font-size:10.5px;letter-spacing:.17em;text-transform:uppercase;color:var(--mute)}
+.total .sum{display:flex;align-items:baseline;gap:12px;margin-top:6px}
+.total .usd{font-size:38px;font-weight:600;letter-spacing:-.02em;line-height:1}
+.total .jpy{font-family:Plex;font-size:15px;color:var(--mute)}
+.total .rate{font-family:Plex;font-size:10.5px;color:var(--mute);margin-top:7px;letter-spacing:.03em}
+.unknown{display:flex;flex-direction:column;align-items:flex-end}
+.unknown .cap{font-family:Plex;font-size:10.5px;letter-spacing:.17em;text-transform:uppercase;
+  color:var(--mute);margin-bottom:9px}
+.unknown .slots{display:flex;gap:10px}
+.nw{white-space:nowrap}
+.blank{width:132px;border:1px dashed #C9BFAE;border-radius:3px;background:rgba(255,255,255,.35);
+  padding:9px 10px 8px}
+.blank .slot{height:15px;border-bottom:1px solid #D5CBB9}
+.blank .nm{font-size:11.5px;font-weight:600;margin-top:7px;line-height:1.2}
+.blank .nt{font-family:Plex;font-size:9.5px;color:var(--mute);margin-top:2px}
+.note{font-family:Plex;font-size:11px;color:var(--mute);line-height:1.55}
+.note b{font-weight:500;color:#5F574A}
+
+.lead{margin-top:26px;font-size:15px;color:#5F574A;max-width:640px;line-height:1.55;flex:none}
+.three{flex:1;display:grid;grid-template-columns:repeat(3,1fr);gap:26px;align-content:center;
+  padding:30px 0}
+.one{display:block;text-decoration:none;color:inherit}
+.one .shot{border:1px solid var(--line);border-radius:4px;overflow:hidden;background:#fff;
+  aspect-ratio:1440/900}
+.one .shot img{width:100%;display:block}
+.one .nm{font-family:Prata;font-size:26px;margin-top:16px;line-height:1}
+.one .tg{font-family:Plex;font-size:10px;letter-spacing:.18em;text-transform:uppercase;
+  color:var(--mute);margin-top:9px}
+.one .ds{font-size:13px;color:#5F574A;line-height:1.5;margin-top:9px}
+.tail{font-family:Plex;font-size:11px;color:var(--mute);flex:none;padding-top:18px;
+  border-top:1px solid var(--line)}
+</style></head><body><div class="hdr">
+  <div>
+    <h1>Япония</h1>
+    <div class="when"><b>4 — 19 января 2027</b> · 15 ночей · 4 переезда</div>
+  </div>
+  <div class="view-tag">&nbsp;<b>три вида</b></div>
+</div><div class="lead">Один и тот же январь, показанный тремя способами. Данные во всех трёх одинаковые — настоящие брони. Открой любой и скажи, какой из них твой.</div><div class="three"><a class="one" href="thread.html"><div class="shot"><img src="shots/thread.png" alt=""></div><div class="tg">вид 1</div><div class="nm">Нитка</div><div class="ds">Вся поездка одной линией: где ты в любой день, сколько ночей в каждом городе и сколько стоит каждый отрезок.</div></a><a class="one" href="calendar.html"><div class="shot"><img src="shots/calendar.png" alt=""></div><div class="tg">вид 2</div><div class="nm">Январь</div><div class="ds">Поездка внутри месяца: какие числа заняты, какие свободны, на какие дни недели попадают переезды.</div></a><a class="one" href="cards.html"><div class="shot"><img src="shots/cards.png" alt=""></div><div class="tg">вид 3</div><div class="nm">Города</div><div class="ds">Карточка на каждый город: часы заезда и выезда, комната, еда, адрес с телефоном и до какого числа бронь отменяется даром.</div></a></div><div class="tail">Ночёвки $1 876 · ¥297 912 · курс на 23 августа 2026. Перелёт, поезда и еда пока не посчитаны.</div></body></html>

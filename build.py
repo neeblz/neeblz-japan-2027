@@ -75,6 +75,43 @@ def yen(amount: int) -> str:
     return "¥" + f"{amount:,}".replace(",", THIN)
 
 
+# Курс живёт **одной константой в данных** (`data/trip.json`, ключ `fx`), а не
+# размазан по разметке: обновить его должно быть одной правкой. Значение взято
+# живым 23 августа 2026 (open.er-api.com), а не по памяти.
+FX = {"usd_per_jpy": 158.88, "as_of": "2026-08-23"}   # запасное, если в данных нет
+
+
+def fx_human_date() -> str:
+    """«2026-08-23» → «23 августа 2026»: дату курса читает она, а не машина."""
+    y, m, d = FX["as_of"].split("-")
+    return f"{int(d)} {MONTHS[int(m) - 1]} {y}"
+
+
+def load_fx(data) -> None:
+    """Курс — из данных, а не из кода: одна правка в `trip.json` меняет всё."""
+    block = (data or {}).get("fx") or {}
+    if block.get("usd_per_jpy"):
+        FX.update({"usd_per_jpy": block["usd_per_jpy"],
+                   "as_of": block.get("as_of", FX["as_of"])})
+
+
+def usd(amount: int) -> str:
+    """Иены в доллары — как ориентир, а не как цена.
+
+    Ни попросила 2026-08-23: «дублируй суммы в долларах тоже, йены пусть будут,
+    но скорее справочно». Платит она в иенах, поэтому доллар округляется до
+    целого и никогда не подаётся как точная сумма; дата курса стоит на странице
+    рядом с итогом — без неё через месяц старая цифра читается как сегодняшняя.
+    """
+    return "$" + f"{round(amount / FX['usd_per_jpy']):,}".replace(",", THIN)
+
+
+def money(amount: int) -> str:
+    """Доллар крупно, иена рядом справочно — её порядок, не наш."""
+    return (f'<b class="usd">{usd(amount)}</b>'
+            f'<span class="jpy">{yen(amount)}</span>')
+
+
 def maplink(address: str) -> str:
     from urllib.parse import quote
     return "https://www.google.com/maps/search/?api=1&query=" + quote(address)
@@ -190,7 +227,16 @@ def check(trip: dict) -> list[str]:
         if cutoff.date() < today:
             said.append(f'⚠ {s["name"]}: бесплатная отмена уже прошла ({cutoff.date()})')
 
-    # 6. Никаких секретов в данных. Ключи с подчёркивания — записки самому
+    # 6. Место из вишлиста висит на брони. Опечатка в «stay» — это место,
+    #    которое молча не покажется: страница соберётся, а его на ней не будет.
+    known = {s["id"] for s in stays}
+    for p in trip.get("places", []):
+        if p["stay"] not in known:
+            raise Failed(f'место «{p["title"]}» висит на броне {p["stay"]!r}, а такой нет')
+    if trip.get("places"):
+        said.append(f'мест из вишлиста: {len(trip["places"])}')
+
+    # 7. Никаких секретов в данных. Ключи с подчёркивания — записки самому
     #    себе о том, чего сюда класть нельзя; они перечисляют запретные слова
     #    и поэтому в досмотр не идут, иначе инструкция запрещала бы сама себя.
     blob = json.dumps(
@@ -209,47 +255,208 @@ def check(trip: dict) -> list[str]:
     return said
 
 
+# ─────────────────────────────────────────── цвета и отрезки
+
+# Цвет — единственное, что здесь не из данных: индиго Гиндзы, хурма Киото,
+# сосна Киносаки, глициния Асакусы. Новый город получит цвет из запаса, а не
+# исчезнет с картинки.
+TONES = {
+    ("Токио", "Гиндза"): "#2F4B7C",
+    ("Киото", "Сандзё"): "#B0512A",
+    ("Киносаки", "онсэн"): "#3A6B57",
+    ("Токио", "Асакуса"): "#6A4A7E",
+}
+SPARE = ["#2F4B7C", "#B0512A", "#3A6B57", "#6A4A7E", "#8A6A3B"]
+
+
+def legs(stays: list) -> list:
+    """Города поездки: соседние брони в одном месте — один отрезок.
+
+    Две ночи в Киносаки куплены двумя бронями подряд. Для неё это один город и
+    одна цена — поэтому в нитке и в карточке они слиты. Но сроки бесплатной
+    отмены у этих броней **разные**, и вот это слить нельзя: каждая бронь
+    остаётся внутри карточки отдельной строкой со своим сроком.
+
+    Оплаченное и прожитое — тоже разные вещи: OMO3 оплачен с 14-го, а спит она
+    там с 15-го. Отрезок рисуется по прожитому, оплаченное показано полосой.
+    """
+    out = []
+    for s in stays:
+        arrive = d(s["arriving"]["date"]) if s.get("arriving") else d(s["checkin"]["date"])
+        same = (
+            out
+            and out[-1]["city"] == s["city"]
+            and out[-1]["area"] == s["area"]
+            and out[-1]["paid_to"] == d(s["checkin"]["date"])
+        )
+        if same:
+            leg = out[-1]
+            leg["stays"].append(s)
+            leg["paid_to"] = d(s["checkout"]["date"])
+            leg["jpy"] += s["total_jpy"]
+        else:
+            out.append({
+                "city": s["city"], "area": s["area"],
+                "paid_from": d(s["checkin"]["date"]),
+                "paid_to": d(s["checkout"]["date"]),
+                "sleep_from": arrive,
+                "stays": [s], "jpy": s["total_jpy"],
+            })
+
+    for i, leg in enumerate(out):
+        first, last = leg["stays"][0], leg["stays"][-1]
+        leg["tone"] = TONES.get((leg["city"], leg["area"]), SPARE[i % len(SPARE)])
+        leg["nights"] = (leg["paid_to"] - leg["sleep_from"]).days
+        leg["paid_nights"] = (leg["paid_to"] - leg["paid_from"]).days
+        leg["hotel"] = first["name"]
+        leg["room"] = first["room"]
+        leg["meals"] = first["meals"]
+        leg["checkin"] = first["checkin"]["time"]
+        leg["checkout"] = last["checkout"]["time"]
+        leg["address"] = first["address"]
+        leg["phone"] = first["phone"]
+    return out
+
+
+def span_dates(a: date, b: date) -> str:
+    """«5 — 9 января»: месяц называется один раз, если он один."""
+    if a.month == b.month:
+        return f"{a.day}{NBSP}—{NBSP}{b.day} {MONTHS[a.month - 1]}"
+    return f"{a.day} {MONTHS[a.month - 1]} — {b.day} {MONTHS[b.month - 1]}"
+
+
 # ─────────────────────────────────────────── куски страницы
 
-def hero(trip: dict, stays: list, alerts: list) -> str:
+def masthead(trip: dict, stays: list, all_legs: list) -> str:
     t = trip["trip"]
     start, end = d(t["start"]), d(t["end"])
     days = (end - start).days + 1
     nights = sum(s["nights"] for s in stays)
-    needs = sum(1 for a in alerts if a["level"] == "red")
-
-    chips = "".join(
-        f'<li class="{"transit" if r.get("transit") else ""}">'
-        f'<span class="c">{e(r["city"])}</span>'
-        f'<span class="a">{e(r["area"])}</span>'
-        f'<span class="w">{short(r["from"])}—{short(r["to"])}</span></li>'
-        for r in trip["route"]
-    )
+    moves = len(all_legs)   # прилёт + переезды между городами
 
     return f"""
-<header class="hero">
-  <div class="kanji" aria-hidden="true">日本</div>
-  <p class="eyebrow">поездка</p>
-  <h1>{e(t["title"])}<span class="year">{e(t["year"])}</span></h1>
-  <p class="dates">{e(t["subtitle"])}</p>
-  <ul class="route">{chips}</ul>
-  <ul class="tally">
-    <li><b>{days}</b><span>{plural(days, "день", "дня", "дней")}</span></li>
-    <li><b>{nights}</b><span>{plural(nights, "ночь", "ночи", "ночей")}</span></li>
-    <li><b>{len(stays)}</b><span>{plural(len(stays), "бронь", "брони", "броней")}</span></li>
-    {f'<li class="warn"><b>{needs}</b><span>требует решения</span></li>' if needs else ''}
-  </ul>
+<header class="masthead">
+  <div class="title">
+    <p class="eyebrow">поездка</p>
+    <h1>{e(t["title"])} <span class="year">{e(t["year"])}</span></h1>
+  </div>
+  <p class="when">
+    <b>{e(t["subtitle"])} {e(t["year"])}</b>
+    <span>{days} {plural(days, "день", "дня", "дней")}</span>
+    <span>{nights} оплаченных {plural(nights, "ночь", "ночи", "ночей")}</span>
+    <span>{moves} {plural(moves, "переезд", "переезда", "переездов")}</span>
+  </p>
 </header>"""
 
 
-def alert_block(alerts: list) -> str:
-    """Блок про ночь, на которой сошлись две брони.
+def thread(trip: dict, all_legs: list) -> str:
+    """Нитка: вся поездка одной линией, ширина отрезка — это ночи.
 
-    Тон задаёт `level`. «red» — это вопрос, на который она ещё не ответила:
-    сирена, варианты со сроками. «calm» — она уже ответила, и тогда всё это
-    превращается в подгоняние по решённому вопросу. Что не меняется от тона:
-    блок есть, ночь названа, обе брони живы. Убрать его можно только вместе с
-    наложением в данных — иначе сборка не пройдёт (см. check).
+    Сетка — по ночам поездки: столбец на каждую ночь плюс последний, узкий,
+    на день отъезда. Поэтому ничего не надо считать в пикселях: четыре ночи
+    ровно вдвое шире двух, потому что занимают вдвое больше столбцов.
+    """
+    start, end = d(trip["trip"]["start"]), d(trip["trip"]["end"])
+    total = (end - start).days          # ночей в поездке
+    transit = trip.get("transit", [])
+
+    def col(day: date, n: int = 1) -> str:
+        return f"grid-column:{(day - start).days + 1}/span {n}"
+
+    caps, bars = [], []
+    for leg in transit:
+        when = d(leg["date"])
+        # «ночь в самолёте, отель не нужен» → подпись «ночь / в самолёте»:
+        # слово «ночь» уже стоит заголовком, второй раз оно только мешает.
+        where = leg["detail"].split(",")[0].removeprefix("ночь ")
+        caps.append(
+            f'<div class="cap" style="{col(when)}">'
+            f'<span class="area">ночь</span>'
+            f'<span class="hotel quiet">{e(where)}</span>'
+            f'<span class="stem"></span></div>'
+        )
+        bars.append(
+            f'<div class="bar air" style="{col(when)}"><span class="n">{e(leg["title"].lower())}</span></div>'
+        )
+
+    for leg in all_legs:
+        n = leg["nights"]
+        caps.append(
+            f'<div class="cap" style="{col(leg["sleep_from"], n)}">'
+            f'<span class="town">{e(leg["city"])}</span>'
+            f'<span class="area">{e(leg["area"])}</span>'
+            f'<span class="hotel">{e(leg["hotel"])}</span>'
+            f'<span class="stem"></span></div>'
+        )
+        # На узком отрезке две метки времени слипаются — выезд там живёт
+        # в карточке города, а не в нитке.
+        checkout = (f'<span class="edge o">{e(leg["checkout"])}</span>' if n >= 3 else "")
+        bars.append(
+            f'<div class="bar" style="{col(leg["sleep_from"], n)};background:{leg["tone"]}">'
+            f'<span class="edge i">{e(leg["checkin"].replace(" — ", "–"))}</span>{checkout}'
+            f'<span class="who">{e(leg["city"])} · {e(leg["area"])}</span>'
+            f'<span class="n">{n} {plural(n, "ночь", "ночи", "ночей")}</span></div>'
+        )
+
+    bars.append(
+        f'<div class="home" style="grid-column:{total + 1}">'
+        f'<b>{end.day}</b><span>домой</span></div>'
+    )
+
+    # Полоса «оплачено шире, чем прожито». Рисуется только там, где эти два
+    # числа разошлись, и говорит словами из данных, а не из головы.
+    paid = []
+    for leg in all_legs:
+        if leg["paid_from"] >= leg["sleep_from"]:
+            continue
+        why = leg["stays"][-1].get("arriving", {}).get("why", "")
+        paid.append(
+            f'<div class="paidbar" style="{col(leg["paid_from"], leg["paid_nights"])};'
+            f'background:{leg["tone"]}"><span>оплачено с {day_month(leg["paid_from"].isoformat())}'
+            f'{f" · {e(why)}" if why else ""}</span></div>'
+        )
+
+    days = []
+    for i in range(total + 1):
+        day = start + timedelta(days=i)
+        weekend = " we" if day.weekday() >= 5 else ""
+        days.append(
+            f'<div class="day{weekend}"><b>{day.day}</b>'
+            f'<span>{WEEKDAYS[day.weekday()]}</span></div>'
+        )
+
+    # Переезды: между отрезками, из самих отрезков — отдельного списка,
+    # который может разъехаться с бронями, для этого не заводим. Подпись тянется
+    # до следующего переезда: иначе соседние наезжают друг на друга, сетка
+    # разводит их по строкам, и тонкая полоса раздувается втрое.
+    marks = [(leg["sleep_from"],
+              f'прилёт в {leg["city"]}' if i == 0 else f'{all_legs[i - 1]["city"]} → {leg["city"]}')
+             for i, leg in enumerate(all_legs)]
+    marks.append((end, "домой"))
+    moves = []
+    for i, (when, text) in enumerate(marks):
+        room = ((marks[i + 1][0] - when).days if i + 1 < len(marks)
+                else total + 1 - (when - start).days)
+        moves.append(f'<div class="move" style="{col(when, max(room, 1))}"><i></i>{e(text)}</div>')
+
+    return f"""
+<section class="thread" aria-label="вся поездка одной линией">
+  <div class="row caps">{"".join(caps)}</div>
+  <div class="row bars">{"".join(bars)}</div>
+  <div class="row paidrow">{"".join(paid)}</div>
+  <div class="row dates">{"".join(days)}</div>
+  <div class="row moves">{"".join(moves)}</div>
+</section>"""
+
+
+def alert_block(alerts: list) -> str:
+    """Ночь, на которой сошлись две брони.
+
+    Тон задаёт `level`. «red» — вопрос, на который она ещё не ответила: сирена
+    и варианты. «calm» — она ответила, и тогда всё это превращается в
+    подгоняние по решённому. Что не меняется от тона: блок есть, ночь названа,
+    обе брони живы. Убрать его можно только вместе с наложением в данных —
+    иначе сборка не пройдёт (см. check).
     """
     if not alerts:
         return ""
@@ -258,18 +465,17 @@ def alert_block(alerts: list) -> str:
         red = a["level"] == "red"
         facts = "".join(f"<li>{e(x)}</li>" for x in a.get("facts", []))
         options = "".join(
-            f"""<li class="opt">
-                  <h4>{e(o["title"])}</h4>
-                  <p>{e(o["detail"])}</p>
-                  <p class="watch" data-deadline="{e(o.get("deadline", ""))}">{e(o["watch"])}</p>
-                </li>"""
+            f"""<li class="opt"><h4>{e(o["title"])}</h4><p>{e(o["detail"])}</p>
+                <p class="watch" data-deadline="{e(o.get("deadline", ""))}">{e(o["watch"])}</p></li>"""
             for o in a.get("options", [])
         )
         out.append(f"""
 <section class="alert {e(a["level"])}" id="{e(a["id"])}">
-  <p class="siren">{"нужно решение" if red else "как задумано"}</p>
-  <h2>{e(a["title"])}</h2>
-  <p class="lead">{e(a["lead"])}</p>
+  <div class="says">
+    <p class="siren">{"нужно решение" if red else "как задумано"}</p>
+    <h2>{e(a["title"])}</h2>
+    <p class="lead">{e(a["lead"])}</p>
+  </div>
   <ul class="facts">{facts}</ul>
   {f'<ol class="options">{options}</ol>' if options else ''}
   <p class="closing">{e(a["closing"])}</p>
@@ -277,126 +483,178 @@ def alert_block(alerts: list) -> str:
     return "".join(out)
 
 
-def timeline(trip: dict, stays: list, alerts: list) -> str:
-    flagged = {a["id"]: a["level"] for a in alerts}
+def places_block(leg: dict, places: list) -> str:
+    """Куда она хочет сходить в этом городе.
 
-    # Ночь в дороге стоит в ленте наравне с ночёвками: если её не показать,
-    # лента начнётся с 5-го и будет тихо противоречить датам в шапке.
-    legs = [("transit", t["date"], t) for t in trip.get("transit", [])]
-    legs += [("stay", s["checkin"]["date"], s) for s in stays]
-    legs.sort(key=lambda x: x[1])
+    Это **не** брони: ничего не оплачено, ничего не забронировано, в деньги
+    внизу они не идут. Поэтому и выглядят иначе — пунктир вместо заливки.
+    Список будет расти: первые четыре видны всегда, остальные под строкой,
+    чтобы десятое место не растянуло карточку на второй экран.
+    """
+    mine = [p for p in places if p["stay"] in {s["id"] for s in leg["stays"]}]
+    head = '<p class="wish-cap">хочу сходить <span>· из вишлиста, не бронь</span></p>'
 
-    rows = []
-    for kind, _when, item in legs:
-        if kind == "transit":
-            rows.append(f"""
-<li class="transit">
-  <div class="when">
-    <b>{short(item["date"])}</b>
-    <span>{weekday(item["date"])}</span>
-  </div>
-  <div class="what">
-    <p class="place">{e(item["title"])}</p>
-    <p class="len">{e(item["detail"])}</p>
-  </div>
-</li>""")
-            continue
+    if not mine:
+        return (f'<div class="wishes empty">{head}'
+                f'<p class="none">пусто — что попадёт в вишлист по этому городу, '
+                f'появится здесь</p></div>')
 
-        s = item
-        tone = flagged.get(s.get("conflict"))
-        rows.append(f"""
-<li class="{'clash' if tone == 'red' else 'noted' if tone else ''}">
-  <div class="when">
-    <b>{short(s["checkin"]["date"])}</b>
-    <span>{weekday(s["checkin"]["date"])}</span>
-  </div>
-  <div class="what">
-    <p class="place">{e(s["city"])} <span>· {e(s["area"])}</span></p>
-    <p class="who"><a href="#{e(s["id"])}">{e(s.get("label") or s["name"])}</a></p>
-    <p class="len">{s["nights"]} {plural(s["nights"], "ночь", "ночи", "ночей")}
-       · до {short(s["checkout"]["date"])}</p>
-    {f'<p class="clash-note"><a href="#{s["conflict"]}">пересекается с соседней бронью</a></p>' if tone else ''}
-  </div>
-</li>""")
-    return f"""
-<section id="timeline">
-  <h2 class="sec">Как идёт поездка</h2>
-  <ol class="timeline">{"".join(rows)}</ol>
-</section>"""
+    def one(p):
+        where = f'<span class="where">{e(p["where"])}</span>' if p.get("where") else ""
+        return (f'<li><b>{e(p["title"])}</b>{where}'
+                f'<span class="what">{e(p["what"])}</span></li>')
+
+    shown = "".join(one(p) for p in mine[:4])
+    rest = mine[4:]
+    more = ""
+    if rest:
+        more = (f'<details class="wish-more"><summary>ещё {len(rest)} '
+                f'{plural(len(rest), "место", "места", "мест")}</summary>'
+                f'<ul>{"".join(one(p) for p in rest)}</ul></details>')
+    return f'<div class="wishes">{head}<ul>{shown}</ul>{more}</div>'
 
 
-def stay_cards(stays: list, alerts: list, cancelled: list) -> str:
+def city_cards(all_legs: list, alerts: list, places: list, cancelled: list) -> str:
+    """Карточка на город: всё, что превращается в деньги и в опоздания."""
     flagged = {a["id"]: a["level"] for a in alerts}
     cards = []
-    for s in stays:
-        pay = s["payment"]
-        if pay["mode"] == "prepaid":
-            money = (
-                f'<span class="paid">списано {yen(pay["paid_jpy"])}</span>'
-                f'<span class="due">спишется {yen(pay["upcoming_jpy"])}</span>'
-            )
-        else:
-            money = '<span class="onsite">оплата на месте</span>'
 
-        extras = "".join(f"<li>{e(x)}</li>" for x in s.get("extras", []))
-        notes = "".join(f"<li>{e(x)}</li>" for x in s.get("notes", []))
-
-        cards.append(f"""
-<article class="stay {'clash' if flagged.get(s.get('conflict')) == 'red' else 'noted' if s.get('conflict') in flagged else ''}" id="{e(s["id"])}">
-  <div class="head">
-    <p class="city">{e(s["city"])} <span>· {e(s["area"])}</span></p>
-    <h3>{e(s["name"])}</h3>
-    {f'<p class="label">{e(s["label"])}</p>' if s.get("label") else ''}
-  </div>
-
-  <div class="stayline">
-    <div><span class="k">заезд</span><b>{day_month(s["checkin"]["date"])}</b>
-         <span class="t">{weekday(s["checkin"]["date"])}, {e(s["checkin"]["time"])}</span></div>
-    <div class="arrow" aria-hidden="true">→</div>
-    <div><span class="k">выезд</span><b>{day_month(s["checkout"]["date"])}</b>
-         <span class="t">{weekday(s["checkout"]["date"])}, {e(s["checkout"]["time"])}</span></div>
-  </div>
-
-  {f'''<p class="arriving"><span class="k">приезжаешь</span>
-       <b>{day_month(s["arriving"]["date"])}</b>
-       <span class="t">{e(s["arriving"]["why"])} · ночь {short(s["checkin"]["date"])} оплачена и остаётся пустой</span></p>''' if s.get("arriving") else ''}
-
-  <dl class="facts">
-    <div><dt>номер</dt><dd>{e(s["room"])}</dd></div>
-    <div><dt>гостей</dt><dd>{e(s["guests"])}</dd></div>
-    <div><dt>еда</dt><dd>{e(s["meals"])}</dd></div>
-    <div><dt>стоимость</dt><dd class="money">{yen(s["total_jpy"])} <span class="split">{money}</span></dd></div>
-  </dl>
-
+    for leg in all_legs:
+        many = len(leg["stays"]) > 1
+        brons = []
+        for s in leg["stays"]:
+            tone = flagged.get(s.get("conflict"))
+            klass = "stay clash" if tone == "red" else "stay noted" if tone else "stay"
+            label = (f'<p class="blabel">{e(s.get("label") or s["name"])}</p>'
+                     if many and s.get("label") else "")
+            arriving = ""
+            if s.get("arriving"):
+                arriving = (
+                    f'<p class="arriving"><b>приезжаешь {day_month(s["arriving"]["date"])}</b>'
+                    f'<span>{e(s["arriving"]["why"])} · ночь {short(s["checkin"]["date"])} '
+                    f'оплачена и остаётся пустой</span></p>'
+                )
+            brons.append(f"""
+<div class="{klass}" id="{e(s["id"])}">
+  {label}
+  {arriving}
   <p class="cancel" data-deadline="{e(s["cancel"]["free_until"])}">
     <span class="k">бесплатная отмена</span>
     <b>до {day_month(s["cancel"]["free_until"])} {d(s["cancel"]["free_until"]).year}, {e(s["cancel"]["free_until"][11:16])} JST</b>
     <span class="t">{e(s["cancel"]["note"])}</span>
   </p>
+</div>""")
 
-  {f'<ul class="extras">{extras}</ul>' if extras else ''}
-  {f'<ul class="hotelnotes">{notes}</ul>' if notes else ''}
+        pay = leg["stays"][0]["payment"]
+        if pay["mode"] == "prepaid":
+            how = (f'<span class="paid">списано {yen(pay["paid_jpy"])}</span>'
+                   f'<span class="due">спишется {yen(pay["upcoming_jpy"])}</span>')
+        else:
+            how = '<span class="onsite">оплата на месте</span>'
+        if many:
+            how += (f'<span class="onsite">{len(leg["stays"])} брони по '
+                    f'{yen(leg["stays"][0]["total_jpy"])}</span>')
 
-  <div class="links">
-    <a class="btn" href="{e(maplink(s["address"]))}" target="_blank" rel="noreferrer noopener">На карте</a>
-    <a class="btn" href="{e(tellink(s["phone"]))}">{e(s["phone"])}</a>
+        # Налог на источники записан в обеих ночёвках Киносаки — в карточке
+        # города он один и тот же и повторяться не должен.
+        extras = "".join(f"<li>{e(x)}</li>" for x in dict.fromkeys(
+            x for s in leg["stays"] for x in s.get("extras", [])))
+        notes = "".join(f"<li>{e(x)}</li>" for s in leg["stays"] for x in s.get("notes", []))
+        fine = (f'<details class="fine"><summary>ещё про отель</summary>'
+                f'<ul>{notes}</ul></details>') if notes else ""
+
+        cards.append(f"""
+<article class="city">
+  <div class="cap" style="background:{leg["tone"]}">
+    <p class="name">{e(leg["city"])}</p>
+    <p class="area">{e(leg["area"])}</p>
   </div>
-  <p class="addr">{e(s["address"])}</p>
+  <div class="inner">
+    <p class="hotel">{e(leg["hotel"])}</p>
+    <p class="span">{span_dates(leg["sleep_from"], leg["paid_to"])}
+       <span>{leg["nights"]} {plural(leg["nights"], "ночь", "ночи", "ночей")}</span></p>
+    <p class="price">{money(leg["jpy"])}<span class="how">{how}</span></p>
+
+    <dl class="rows">
+      <div><dt>комната</dt><dd>{e(leg["room"])}</dd></div>
+      <div><dt>еда</dt><dd>{e(leg["meals"])}</dd></div>
+      <div><dt>заезд</dt><dd class="num">{e(leg["checkin"])}</dd></div>
+      <div><dt>выезд</dt><dd class="num">{e(leg["checkout"])}</dd></div>
+      <div><dt>адрес</dt><dd>
+        <a class="btn" href="{e(maplink(leg["address"]))}" target="_blank" rel="noreferrer noopener">{e(leg["address"])}</a>
+        <a class="btn tel" href="{e(tellink(leg["phone"]))}">{e(leg["phone"])}</a></dd></div>
+    </dl>
+
+    {"".join(brons)}
+    {f'<ul class="extras">{extras}</ul>' if extras else ''}
+    {fine}
+    {places_block(leg, places)}
+  </div>
 </article>""")
 
     gone = ""
     if cancelled:
         items = "".join(
-            f'<li><b>{e(c["name"])}</b> — {yen(c["total_jpy"])}<span>{e(c["note"])}</span></li>'
+            f'<li><b>{e(c["name"])}</b> — {money(c["total_jpy"])} <span>{e(c["note"])}</span></li>'
             for c in cancelled
         )
-        gone = f'<div class="cancelled"><p class="sec-note">Отменённое</p><ul>{items}</ul></div>'
+        gone = f'<ul class="cancelled">{items}</ul>'
+
+    return f'<section class="cities">{"".join(cards)}</section>{gone}'
+
+
+def ledger(trip: dict, stays: list, all_legs: list) -> str:
+    """Деньги и честно пустые места рядом.
+
+    Итог в долларах складывается из показанных долларов по городам, а не из
+    общей иены: иначе четыре числа на экране в столбик дают на доллар больше,
+    чем итог, и это первое, что бросается в глаза. В иенах всё точно.
+    """
+    total = sum(s["total_jpy"] for s in stays)
+    usd_total = sum(round(leg["jpy"] / FX["usd_per_jpy"]) for leg in all_legs)
+    slept = sum(leg["nights"] for leg in all_legs)
+    paid = sum(s["payment"].get("paid_jpy", 0) for s in stays)
+    upcoming = sum(s["payment"].get("upcoming_jpy", 0) for s in stays)
+    onsite = sum(s["total_jpy"] for s in stays if s["payment"]["mode"] == "at_property")
+
+    def part(x: int) -> str:
+        return f"{x / total * 100:.1f}%"
+
+    blanks = "".join(
+        f'<div class="blank"><span class="slot"></span>'
+        f'<b>{e(u["label"])}</b><span class="nt">{e(u["note"])}</span></div>'
+        for u in trip.get("unknown", [])
+    )
+    caveats = "".join(f"<li>{e(x)}</li>" for x in trip["notes"])
 
     return f"""
-<section id="stays">
-  <h2 class="sec">Где живём</h2>
-  {"".join(cards)}
-  {gone}
+<section class="ledger">
+  <div class="total">
+    <p class="cap">жильё · {len(stays)} {plural(len(stays), "бронь", "брони", "броней")},
+       {slept} {plural(slept, "ночь", "ночи", "ночей")}</p>
+    <p class="sum"><b class="usd">${f"{usd_total:,}".replace(",", THIN)}</b>
+       <span class="jpy">{yen(total)}</span></p>
+    <p class="fx">$1 = ¥{FX["usd_per_jpy"]} · курс на {fx_human_date()} · платится в иенах,
+       доллары округлены</p>
+    <div class="bar" role="img" aria-label="как разделена оплата">
+      <span class="seg paid" style="width:{part(paid)}"></span>
+      <span class="seg due" style="width:{part(upcoming)}"></span>
+      <span class="seg onsite" style="width:{part(onsite)}"></span>
+    </div>
+    <ul class="legend">
+      <li class="paid"><b>{yen(paid)}</b><span>уже списано</span></li>
+      <li class="due"><b>{yen(upcoming)}</b><span>спишется само</span></li>
+      <li class="onsite"><b>{yen(onsite)}</b><span>на месте, при заезде</span></li>
+    </ul>
+  </div>
+  <div class="beyond">
+    <p class="cap">сверх этого — считается на месте</p>
+    <ul class="caveats">{caveats}</ul>
+  </div>
+  <div class="unknown">
+    <p class="cap">ещё не посчитано</p>
+    <div class="slots">{blanks}</div>
+  </div>
 </section>"""
 
 
@@ -417,13 +675,12 @@ def checklist(trip: dict) -> str:
         )
         groups.append(f'<div class="todo-group"><h3>{e(g["group"])}</h3><ul>{items}</ul></div>')
     return f"""
-<section id="todo">
-  <h2 class="sec">Решить и забронировать</h2>
+<div id="todo">
   <p class="sec-note">Галочки живут в этом телефоне. Что решено окончательно —
      переносим в <code>trip.json</code>, чтобы не потерялось.</p>
-  {"".join(groups)}
+  <div class="todo-cols">{"".join(groups)}</div>
   <button class="reset" type="button" data-reset>Снять галочки на этом устройстве</button>
-</section>"""
+</div>"""
 
 
 def by_day(trip: dict, stays: list, alerts: list) -> str:
@@ -462,12 +719,11 @@ def by_day(trip: dict, stays: list, alerts: list) -> str:
         day += timedelta(days=1)
 
     return f"""
-<section id="days">
-  <h2 class="sec">По дням</h2>
+<div id="days">
   <p class="sec-note">Города подставляются из броней. Планы на день —
      раздел <code>days</code> в <code>trip.json</code>.</p>
   <ol class="days">{"".join(rows)}</ol>
-</section>"""
+</div>"""
 
 
 def luggage(trip: dict) -> str:
@@ -483,384 +739,363 @@ def luggage(trip: dict) -> str:
     )
     always = "".join(f"<li>{e(x)}</li>" for x in lug["always"])
     return f"""
-<section id="luggage">
-  <h2 class="sec">Багаж</h2>
+<div id="luggage">
   <p class="lead">{e(lug["lead"])}</p>
   <ol class="moves">{moves}</ol>
   <ul class="always">{always}</ul>
-</section>"""
+</div>"""
 
 
-def budget(stays: list, notes: list) -> str:
-    total = sum(s["total_jpy"] for s in stays)
-    # Ночей в поездке, а не сумма ночей по бронам: на 14-е их две, и написать
-    # здесь 15 значило бы посчитать наложение как ещё один день отдыха.
-    slept = len({
-        d(s["checkin"]["date"]) + timedelta(days=i)
-        for s in stays
-        for i in range(s["nights"])
-    })
-    paid = sum(s["payment"].get("paid_jpy", 0) for s in stays)
-    upcoming = sum(s["payment"].get("upcoming_jpy", 0) for s in stays)
-    onsite = sum(s["total_jpy"] for s in stays if s["payment"]["mode"] == "at_property")
+def more_block(trip: dict, stays: list, alerts: list) -> str:
+    """Списки, дни и багаж — свёрнуты, но никуда не делись.
 
-    def bar(part: int) -> str:
-        return f"{part / total * 100:.1f}%"
-
-    lines = "".join(
-        f'<li><span>{e(s.get("label") or s["name"])}</span><b>{yen(s["total_jpy"])}</b></li>'
-        for s in stays
+    Ни сказала про длинную версию: «слишком много листать вниз». Выкидывать
+    при этом нечего — поэтому длинное лежит здесь, за одним нажатием, а не
+    на главном экране.
+    """
+    parts = [
+        ("Решить и забронировать", checklist(trip)),
+        ("По дням", by_day(trip, stays, alerts)),
+        ("Багаж", luggage(trip)),
+    ]
+    return "".join(
+        f'<details class="more"><summary>{e(name)}</summary>{body}</details>'
+        for name, body in parts
     )
-    extra = "".join(f"<li>{e(x)}</li>" for x in notes)
 
+
+def colophon(trip: dict) -> str:
     return f"""
-<section id="budget">
-  <h2 class="sec">Деньги</h2>
-  <p class="grand">{yen(total)}<span>за жильё, {slept} {plural(slept, "ночь", "ночи", "ночей")}</span></p>
-  <div class="bar" role="img" aria-label="как разделена оплата">
-    <span class="seg paid" style="width:{bar(paid)}"></span>
-    <span class="seg due" style="width:{bar(upcoming)}"></span>
-    <span class="seg onsite" style="width:{bar(onsite)}"></span>
-  </div>
-  <ul class="legend">
-    <li class="paid"><b>{yen(paid)}</b><span>уже списано</span></li>
-    <li class="due"><b>{yen(upcoming)}</b><span>спишется автоматически</span></li>
-    <li class="onsite"><b>{yen(onsite)}</b><span>на месте, при заезде</span></li>
-  </ul>
-  <ul class="breakdown">{lines}</ul>
-  <p class="sec-note">Сверх этого — считается на месте:</p>
-  <ul class="caveats">{extra}</ul>
-</section>"""
-
-
-def notes_block(trip: dict) -> str:
-    return f"""
-<section id="notes">
-  <h2 class="sec">Заметки</h2>
-  <ul class="notes">{"".join(f"<li>{e(x)}</li>" for x in trip["notes"])}</ul>
-  <p class="colophon">Обновлено {day_month(trip["trip"]["updated"])} {d(trip["trip"]["updated"]).year}.
-     Страница собирается из одного файла с данными — попроси Блэйза внести правку,
-     и она появится здесь.</p>
-</section>"""
+<footer class="colophon">
+  <span>Обновлено {day_month(trip["trip"]["updated"])} {d(trip["trip"]["updated"]).year}.</span>
+  <span>Страница собирается из одного файла с данными — попроси Блэйза внести
+  правку, и она появится здесь.</span>
+</footer>"""
 
 
 # ─────────────────────────────────────────── стиль
 
 CSS = """
 :root{
-  --paper:#f7f3ec; --card:#fffdf9; --ink:#1e2329; --quiet:#5d6570;
-  --rule:rgba(30,35,41,.12); --deep:#2f4a5c; --deep-soft:#eaf0f3;
-  --fire:#b23a29; --fire-soft:#fbeeec; --moss:#4e6b4a;
-  --gold:#a8834b;
+  --paper:#f2eee7; --card:#fcfaf6; --ink:#1e1b18; --quiet:#8b8275; --deep:#5f574a;
+  --rule:#ded5c6; --hair:#ebe4d8; --gold:#a8834b; --moss:#4e6b4a; --fire:#b23a29;
+  --sand:#f6f0e4;
   --serif:"Iowan Old Style","Palatino Linotype",Palatino,Georgia,"Times New Roman",serif;
   --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
-  --wide:640px;
+  --num:ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;
+  --sheet:1340px;
 }
 @media (prefers-color-scheme:dark){
   :root{
-    --paper:#14181c; --card:#1b2026; --ink:#e8e4dc; --quiet:#9aa3ad;
-    --rule:rgba(232,228,220,.14); --deep:#8fb6cc; --deep-soft:#1e2a33;
-    --fire:#e8836f; --fire-soft:#2b1c19; --moss:#8fb488; --gold:#c9a874;
+    --paper:#14181c; --card:#1b2026; --ink:#e8e4dc; --quiet:#9aa3ad; --deep:#c3bcb0;
+    --rule:rgba(232,228,220,.17); --hair:rgba(232,228,220,.11); --gold:#c9a874;
+    --moss:#8fb488; --fire:#e8836f; --sand:#1e2429;
   }
 }
 *{box-sizing:border-box}
 html{-webkit-text-size-adjust:100%}
 body{
   margin:0; background:var(--paper); color:var(--ink);
-  font-family:var(--sans); font-size:16px; line-height:1.55;
+  font-family:var(--sans); font-size:15px; line-height:1.5;
   -webkit-font-smoothing:antialiased;
-  padding-bottom:64px;
 }
-.wrap{max-width:var(--wide); margin:0 auto; padding:0 18px}
+.sheet{max-width:var(--sheet); margin:0 auto; padding:22px 16px 34px}
+h1,h2,h3,.city .name,.total .usd,.thread .town{font-family:var(--serif); font-weight:600; margin:0}
 a{color:inherit}
-h1,h2,h3,h4{font-family:var(--serif); font-weight:600; letter-spacing:-.01em; margin:0}
-code{font-size:.88em; background:var(--deep-soft); padding:1px 5px; border-radius:4px}
+code{font-size:.88em; background:var(--sand); padding:1px 5px; border-radius:4px}
+.num{font-family:var(--num); font-variant-numeric:tabular-nums}
 
 /* ── шапка */
-.hero{position:relative; padding:44px 0 26px; overflow:hidden}
-.hero .kanji{
-  position:absolute; right:-14px; top:8px; font-family:var(--serif);
-  font-size:132px; line-height:1; color:var(--ink); opacity:.055;
-  pointer-events:none; user-select:none;
-}
-.eyebrow{margin:0; font-size:11px; letter-spacing:.24em; text-transform:uppercase; color:var(--quiet)}
-.hero h1{font-size:46px; line-height:1.02; margin:6px 0 0}
-.hero h1 .year{display:block; font-size:22px; color:var(--gold); letter-spacing:.14em; margin-top:4px}
-.hero .dates{margin:14px 0 0; font-size:19px; font-family:var(--serif); color:var(--quiet)}
-.route{list-style:none; margin:20px 0 0; padding:0; display:flex; flex-wrap:wrap; gap:7px}
-.route li{
-  background:var(--card); border:1px solid var(--rule); border-radius:10px;
-  padding:7px 11px; line-height:1.25;
-}
-.route .c{font-weight:600; font-size:14px}
-.route .a{font-size:14px; color:var(--quiet)}
-.route .a::before{content:"·"; margin:0 5px; opacity:.45}
-.route .w{display:block; font-size:11px; color:var(--quiet); letter-spacing:.05em; margin-top:2px}
-.tally{list-style:none; display:flex; gap:22px; margin:22px 0 0; padding:0; flex-wrap:wrap}
-.tally b{display:block; font-family:var(--serif); font-size:27px; line-height:1}
-.tally span{font-size:11px; letter-spacing:.1em; text-transform:uppercase; color:var(--quiet)}
-.tally .warn b{color:var(--fire)}
+.masthead{position:relative; display:flex; flex-wrap:wrap; align-items:flex-end;
+  justify-content:space-between; gap:10px; padding:2px 0 14px; overflow:hidden}
+.eyebrow{margin:0; font-size:10.5px; letter-spacing:.24em; text-transform:uppercase; color:var(--quiet)}
+.masthead h1{font-size:44px; line-height:1; letter-spacing:-.01em; margin-top:4px}
+.masthead h1 .year{color:var(--gold); font-size:24px; letter-spacing:.06em}
+.masthead .when{margin:0; font-size:13px; color:var(--quiet); letter-spacing:.04em;
+  display:flex; flex-wrap:wrap; gap:4px 14px; align-items:baseline}
+.masthead .when b{color:var(--ink); font-size:15px; letter-spacing:.02em}
+.masthead .when span::before{content:"·"; margin-right:14px; opacity:.5}
 
-/* ── навигация */
-nav.jump{
-  position:sticky; top:0; z-index:9; background:var(--paper);
-  border-bottom:1px solid var(--rule); margin-bottom:8px;
-}
-nav.jump ul{
-  list-style:none; display:flex; gap:4px; margin:0; padding:5px 18px;
-  overflow-x:auto; -webkit-overflow-scrolling:touch; scrollbar-width:none;
-  max-width:var(--wide); margin:0 auto;
-}
-nav.jump ul::-webkit-scrollbar{display:none}
-nav.jump a{
-  display:flex; align-items:center; min-height:40px; white-space:nowrap;
-  font-size:13px; padding:0 13px; border-radius:999px;
-  text-decoration:none; color:var(--quiet);
-}
-nav.jump a.hot{color:var(--fire); background:var(--fire-soft); font-weight:600}
+/* ── нитка */
+.thread{border-top:1px solid var(--rule); padding-top:16px; margin-bottom:18px}
+.thread .row{display:grid; grid-template-columns:repeat(var(--nights),1fr) 88px; gap:4px}
+.thread .cap{padding-right:10px; align-self:end}
+.thread .cap span{display:block}
+.thread .cap .town{font-size:22px; line-height:1.05; display:block}
+.thread .cap .area{font-size:10px; letter-spacing:.16em; text-transform:uppercase;
+  color:var(--quiet); margin-top:3px}
+.thread .cap .hotel{font-size:12.5px; font-weight:600; margin-top:6px; line-height:1.25;
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+.thread .cap .hotel.quiet{color:var(--quiet); font-weight:500}
+/* Ножка от подписи к отрезку. Класс не `tick` нарочно: так называется
+   галочка чеклиста ниже, и одноимённый класс превращал ножку в плашку. */
+.thread .cap .stem{height:9px; border-left:1px solid var(--rule); margin-top:7px}
+.thread .bars{align-items:stretch; margin-top:2px}
+.thread .bar{height:62px; border-radius:4px; position:relative; display:flex;
+  align-items:flex-end; padding:0 12px 9px; color:#fff; overflow:hidden}
+.thread .bar .n{font-size:12.5px; font-weight:600; letter-spacing:.01em}
+.thread .bar .who{display:none}
+.thread .bar .edge{position:absolute; top:9px; font-family:var(--num); font-size:9.5px;
+  color:rgba(255,255,255,.72); white-space:nowrap}
+.thread .bar .edge.i{left:12px}
+.thread .bar .edge.o{right:12px}
+.thread .bar.air{background:transparent; border:1px dashed var(--rule); color:var(--quiet);
+  background-image:repeating-linear-gradient(45deg,rgba(139,130,117,.13) 0 5px,transparent 5px 10px)}
+.thread .bar.air .n{color:var(--quiet); font-weight:500}
+.thread .home{border-left:1px solid var(--rule); padding-left:11px; display:flex;
+  flex-direction:column; justify-content:flex-end; height:62px}
+.thread .home b{font-family:var(--serif); font-size:20px; line-height:1}
+.thread .home span{font-size:9.5px; letter-spacing:.14em; text-transform:uppercase;
+  color:var(--quiet); margin-top:4px}
+.thread .paidrow{margin-top:4px; height:14px}
+.thread .paidbar{height:7px; border-radius:2px; opacity:.42; position:relative}
+.thread .paidbar span{position:absolute; left:0; top:10px; white-space:nowrap;
+  font-size:10px; color:var(--quiet)}
+.thread .dates{margin-top:14px; border-top:1px solid var(--rule)}
+.thread .day{text-align:center; padding-top:8px; position:relative}
+.thread .day::before{content:""; position:absolute; left:50%; top:0; width:1px; height:4px;
+  background:var(--rule)}
+.thread .day b{font-family:var(--num); font-size:13px; font-weight:600}
+.thread .day span{display:block; font-size:9.5px; color:var(--quiet); letter-spacing:.08em}
+.thread .day.we b{color:var(--deep)}
+.thread .moves{margin-top:9px}
+.thread .move{display:flex; align-items:center; gap:6px; font-size:10.5px; color:var(--deep);
+  white-space:nowrap; margin-left:-3px}
+.thread .move i{width:0; height:0; border-left:5px solid var(--gold);
+  border-top:3.5px solid transparent; border-bottom:3.5px solid transparent; flex:none}
 
-/* ── тревога */
-.alert{
-  background:var(--fire-soft); border:1.5px solid var(--fire); border-radius:14px;
-  padding:20px 17px; margin:22px 0 34px;
-}
-/* «calm» — вопрос, на который Ни уже ответила. Форма та же, голос другой:
-   песок вместо киновари, точка вместо восклицания. Блок остаётся, потому что
-   ночь с двумя бронями надо видеть; сирена уходит, потому что решение принято. */
-.alert.calm{ background:var(--deep-soft); border-color:var(--gold); border-width:1px }
-.alert.calm .siren{ color:var(--gold) }
-.alert.calm .siren::before{ content:"◆"; font-size:8px; vertical-align:2px }
-.alert.calm h2{ color:var(--ink) }
-.alert.calm .facts li::before{ color:var(--gold) }
-.alert .siren{
-  margin:0 0 9px; font-size:11px; letter-spacing:.2em; text-transform:uppercase;
-  color:var(--fire); font-weight:700;
-}
-.alert .siren::before{content:"●"; margin-right:7px; font-size:9px; vertical-align:2px}
-.alert h2{font-size:25px; line-height:1.16; color:var(--fire)}
-.alert .lead{margin:11px 0 0; font-size:15.5px}
-.alert .facts{list-style:none; margin:15px 0 0; padding:0; font-size:14.5px}
-.alert .facts li{padding:5px 0 5px 17px; position:relative; color:var(--quiet)}
-.alert .facts li::before{content:"—"; position:absolute; left:0; color:var(--fire)}
-.alert .options{list-style:none; counter-reset:o; margin:17px 0 0; padding:0; display:grid; gap:11px}
-.alert .opt{
-  background:var(--card); border-radius:11px; padding:14px 15px 13px;
-  counter-increment:o; position:relative;
-}
-.alert .opt h4{font-size:16.5px; padding-left:26px}
-.alert .opt h4::before{
-  content:counter(o); position:absolute; left:15px; width:19px; height:19px;
-  border-radius:50%; background:var(--fire); color:#fff; font-family:var(--sans);
-  font-size:11px; font-weight:700; display:grid; place-items:center; margin-top:2px;
-}
-.alert .opt p{margin:7px 0 0; font-size:14.5px}
-.alert .watch{color:var(--fire); font-weight:600}
-.alert .watch .left{display:block; font-weight:400; color:var(--quiet); font-size:13px; margin-top:3px}
-.alert .closing{
-  margin:16px 0 0; font-size:14.5px; font-family:var(--serif); font-style:italic;
-  border-top:1px solid var(--rule); padding-top:13px;
-}
+/* ── заметка про ночь с двумя бронями */
+.alert{border:1.5px solid var(--fire); background:var(--sand); border-radius:12px;
+  padding:11px 16px; margin:0 0 18px; display:flex; flex-wrap:wrap; gap:6px 26px;
+  align-items:baseline}
+.alert.calm{border:1px solid var(--gold)}
+.alert .says{flex:none; max-width:520px}
+.alert .siren{margin:0; font-size:10px; letter-spacing:.2em; text-transform:uppercase;
+  color:var(--fire); font-weight:700}
+.alert.calm .siren{color:var(--gold)}
+.alert .siren::before{content:"●"; margin-right:7px; font-size:8px; vertical-align:2px}
+.alert.calm .siren::before{content:"◆"}
+.alert h2{font-size:17px; margin-top:3px; color:var(--fire)}
+.alert.calm h2{color:var(--ink)}
+.alert .lead{margin:2px 0 0; font-size:13.5px; color:var(--deep)}
+.alert .facts{list-style:none; margin:0; padding:0; display:flex; flex-wrap:wrap; gap:2px 22px;
+  font-size:12px; color:var(--quiet); flex:1; min-width:260px}
+.alert .facts li{padding-left:16px; position:relative}
+.alert .facts li::before{content:"—"; position:absolute; left:0; color:var(--gold)}
+.alert .closing{margin:0; font-size:12.5px; font-style:italic; color:var(--deep); flex:none}
+.alert .options{list-style:none; margin:0; padding:0; display:grid; gap:9px}
+.alert .opt h4{font-size:15px}
+.alert .watch{color:var(--fire); font-weight:600; font-size:12.5px}
+.alert .watch .left,.cancel .left{display:block; font-weight:400; color:var(--quiet)}
 
-/* ── секции */
-section{margin:0 0 40px; scroll-margin-top:56px}
-h2.sec{
-  font-size:13px; letter-spacing:.18em; text-transform:uppercase; color:var(--quiet);
-  font-family:var(--sans); font-weight:700; margin-bottom:14px;
-  padding-bottom:8px; border-bottom:1px solid var(--rule);
-}
-.sec-note{font-size:13px; color:var(--quiet); margin:-6px 0 14px}
-.lead{font-size:15.5px; margin:0 0 15px}
-
-/* ── лента */
-.timeline{list-style:none; margin:0; padding:0; position:relative}
-.timeline::before{
-  content:""; position:absolute; left:33px; top:12px; bottom:12px;
-  width:1px; background:var(--rule);
-}
-.timeline li{display:flex; gap:16px; padding:0 0 18px; position:relative}
-.timeline .when{width:52px; flex:none; text-align:center; position:relative; z-index:1}
-.timeline .when b{
-  display:grid; place-items:center; width:44px; height:44px; margin:0 auto;
-  border-radius:50%; background:var(--card); border:1px solid var(--rule);
-  font-family:var(--serif); font-size:14px;
-}
-.timeline .when span{display:block; font-size:10.5px; color:var(--quiet); margin-top:4px; letter-spacing:.08em}
-.timeline .what{padding-top:3px}
-.timeline .place{margin:0; font-size:16px; font-weight:600}
-.timeline .place span{color:var(--quiet); font-weight:400}
-.timeline .who{margin:2px 0 0; font-size:14.5px}
-.timeline .who a{color:var(--deep); text-decoration-color:var(--rule); text-underline-offset:3px}
-.timeline .len{margin:2px 0 0; font-size:12.5px; color:var(--quiet)}
-.timeline .clash .when b{border-color:var(--fire); color:var(--fire); border-width:1.5px}
-.timeline .noted .when b{border-color:var(--gold); color:var(--gold)}
-.timeline .transit .when b{background:transparent; border-style:dashed; color:var(--quiet)}
-.timeline .transit .place{font-size:15px; color:var(--quiet); font-weight:500}
-.route .transit{border-style:dashed; opacity:.8}
-.clash-note{
-  margin:6px 0 0; font-size:12px; color:var(--fire); font-weight:600;
-  background:var(--fire-soft); display:inline-block; padding:3px 8px; border-radius:6px;
-}
-.clash-note a{ text-decoration:none; color:inherit }
-.noted .clash-note{ color:var(--gold); background:var(--deep-soft) }
-
-/* ── карточки жилья */
-.stay{
-  background:var(--card); border:1px solid var(--rule); border-radius:14px;
-  padding:18px 16px; margin:0 0 14px;
-}
-.stay.clash{border-color:var(--fire); border-width:1.5px}
-.stay.noted{border-color:var(--gold)}
-.arriving{
-  margin:13px 0 0; padding:11px 13px; border-radius:10px; background:var(--deep-soft);
-  border-left:3px solid var(--gold);
-}
-.arriving .k{display:block; font-size:10.5px; letter-spacing:.12em; text-transform:uppercase; color:var(--quiet)}
-.arriving b{display:block; font-family:var(--serif); font-size:17px; margin-top:2px}
-.arriving .t{display:block; font-size:12.5px; color:var(--quiet); margin-top:2px}
-.stay .city{margin:0; font-size:11.5px; letter-spacing:.14em; text-transform:uppercase; color:var(--quiet)}
-.stay .city span{color:var(--gold)}
-.stay h3{font-size:21px; line-height:1.2; margin-top:5px}
-.stay .label{margin:4px 0 0; font-size:13px; color:var(--quiet); font-style:italic}
-.stayline{
-  display:flex; align-items:flex-start; gap:10px; margin:15px 0 0;
-  padding:13px 0; border-top:1px solid var(--rule); border-bottom:1px solid var(--rule);
-}
-.stayline > div{flex:1}
-.stayline .arrow{flex:none; color:var(--quiet); align-self:center; font-size:15px}
-.stayline .k{display:block; font-size:10.5px; letter-spacing:.12em; text-transform:uppercase; color:var(--quiet)}
-.stayline b{display:block; font-family:var(--serif); font-size:18px; margin-top:2px}
-.stayline .t{display:block; font-size:12.5px; color:var(--quiet)}
-.stay dl.facts{margin:13px 0 0; display:grid; gap:8px}
-.stay dl.facts > div{display:flex; gap:12px; align-items:baseline}
-.stay dt{
-  flex:none; width:82px; font-size:11px; letter-spacing:.1em; text-transform:uppercase;
-  color:var(--quiet);
-}
-.stay dd{margin:0; font-size:14.5px}
-.stay .money{font-family:var(--serif); font-size:18px}
-.stay .split{display:block; font-family:var(--sans); font-size:12.5px; margin-top:2px}
-.stay .split span{display:inline-block; margin-right:9px}
-.stay .paid{color:var(--moss)}
-.stay .due{color:var(--fire)}
-.stay .onsite{color:var(--quiet)}
-.cancel{
-  margin:14px 0 0; padding:11px 13px; border-radius:10px; background:var(--deep-soft);
-}
-.cancel .k{display:block; font-size:10.5px; letter-spacing:.12em; text-transform:uppercase; color:var(--quiet)}
-.cancel b{display:block; font-size:14.5px; margin-top:2px}
-.cancel .t{display:block; font-size:12.5px; color:var(--quiet); margin-top:2px}
-.cancel .left{display:block; font-size:12.5px; margin-top:4px; font-weight:600; color:var(--deep)}
-.cancel.soon{background:var(--fire-soft)}
+/* ── карточки городов */
+.cities{display:grid; grid-template-columns:repeat(4,1fr); gap:16px; align-items:start}
+.city{background:var(--card); border:1px solid var(--hair); border-radius:6px; overflow:hidden}
+.city .cap{padding:12px 15px 11px; color:#fff}
+.city .name{font-size:21px; line-height:1}
+.city .area{margin:5px 0 0; font-size:9.5px; letter-spacing:.18em; text-transform:uppercase;
+  opacity:.85}
+.city .inner{padding:13px 15px 15px}
+.city .hotel{margin:0; font-size:14.5px; font-weight:600; line-height:1.2}
+.city .span{margin:9px 0 0; font-family:var(--num); font-size:13px; font-weight:500}
+.city .span span{font-family:var(--sans); font-size:10.5px; color:var(--quiet); margin-left:6px}
+.city .price{margin:9px 0 0; display:flex; flex-wrap:wrap; align-items:baseline; gap:0 9px}
+.city .usd{font-family:var(--serif); font-size:27px; line-height:1; letter-spacing:-.01em}
+.city .jpy{font-family:var(--num); font-size:11px; color:var(--quiet)}
+.city .how{display:block; width:100%; font-size:10.5px; margin-top:5px}
+.city .how span{margin-right:9px}
+.city .paid{color:var(--moss)} .city .due{color:var(--fire)} .city .onsite{color:var(--quiet)}
+.rows{margin:12px 0 0; border-top:1px solid var(--hair)}
+.rows > div{display:flex; gap:10px; padding:6px 0; border-bottom:1px solid var(--hair)}
+.rows dt{flex:none; width:60px; font-size:9.5px; letter-spacing:.1em; text-transform:uppercase;
+  color:var(--quiet); padding-top:2px}
+.rows dd{margin:0; font-size:11.5px; line-height:1.35}
+.rows dd.num{font-family:var(--num)}
+.btn{display:block; min-height:20px; text-decoration:none; color:var(--ink);
+  border-bottom:1px dotted var(--rule); padding:1px 0}
+.btn.tel{font-family:var(--num); color:var(--quiet); border:0}
+.stay{margin-top:11px; padding:9px 11px; border-radius:8px; background:var(--sand);
+  border-left:2px solid var(--rule)}
+.stay.noted{border-left-color:var(--gold)}
+.stay.clash{border-left-color:var(--fire)}
+.stay .blabel{margin:0 0 4px; font-size:10.5px; color:var(--quiet); font-style:italic}
+.stay .arriving{margin:0 0 7px; font-size:11.5px}
+.stay .arriving b{display:block; font-size:12.5px}
+.stay .arriving span{display:block; color:var(--quiet); font-size:11px; line-height:1.35}
+.cancel{margin:0; font-size:11.5px}
+.cancel .k{display:block; font-size:9.5px; letter-spacing:.11em; text-transform:uppercase;
+  color:var(--quiet)}
+.cancel b{display:block; font-size:11.5px; margin-top:1px}
+.cancel .t{display:block; color:var(--quiet); font-size:10.5px}
+.cancel .left{margin-top:2px; font-size:10.5px; font-weight:600; color:var(--gold)}
 .cancel.soon .left{color:var(--fire)}
-.extras,.hotelnotes{list-style:none; margin:12px 0 0; padding:0; font-size:13px; color:var(--quiet)}
-.extras li,.hotelnotes li{padding:3px 0 3px 16px; position:relative}
-.extras li::before,.hotelnotes li::before{content:"·"; position:absolute; left:5px; font-weight:700}
-.hotelnotes{border-top:1px dashed var(--rule); padding-top:9px; margin-top:12px}
-.links{display:flex; gap:9px; margin:15px 0 0}
-.btn{
-  flex:1; text-align:center; text-decoration:none; font-size:14px; padding:10px 8px;
-  border-radius:9px; border:1px solid var(--rule); background:var(--paper); color:var(--deep);
-  font-weight:600; white-space:nowrap;
-}
-.btn:active{background:var(--deep-soft)}
-.addr{margin:9px 0 0; font-size:12px; color:var(--quiet); text-align:center}
-.cancelled{margin-top:20px; opacity:.72}
-.cancelled ul{list-style:none; margin:0; padding:0}
-.cancelled li{font-size:13.5px; text-decoration:line-through; color:var(--quiet)}
-.cancelled li span{display:block; font-size:12px; text-decoration:none; margin-top:2px}
+.extras{list-style:none; margin:9px 0 0; padding:0; font-size:10.5px; color:var(--quiet)}
+.extras li{padding-left:11px; position:relative}
+.extras li::before{content:"+"; position:absolute; left:0; color:var(--gold)}
+.fine{margin-top:8px; font-size:10.5px; color:var(--quiet)}
+.fine summary{cursor:pointer; color:var(--deep)}
+.fine ul{list-style:none; margin:6px 0 0; padding:0}
+.fine li{padding:2px 0 2px 11px; position:relative; line-height:1.4}
+.fine li::before{content:"·"; position:absolute; left:3px}
 
-/* ── чеклист */
-.todo-group{margin:0 0 20px}
-.todo-group h3{font-size:15px; margin-bottom:7px; color:var(--deep)}
-.todo-group ul{list-style:none; margin:0; padding:0}
-.todo-group li{border-bottom:1px solid var(--rule)}
-.todo-group label{display:flex; gap:11px; align-items:flex-start; padding:11px 2px; cursor:pointer}
-.todo-group input{position:absolute; opacity:0; width:0; height:0}
-.tick{
-  flex:none; width:20px; height:20px; margin-top:1px; border-radius:6px;
-  border:1.5px solid var(--rule); background:var(--card); position:relative;
-}
-input:checked + .tick{background:var(--moss); border-color:var(--moss)}
-input:checked + .tick::after{
-  content:""; position:absolute; left:6px; top:2px; width:5px; height:10px;
-  border:solid #fff; border-width:0 2px 2px 0; transform:rotate(42deg);
-}
-input:focus-visible + .tick{outline:2px solid var(--deep); outline-offset:2px}
-.txt{font-size:15px}
-input:checked ~ .txt{color:var(--quiet); text-decoration:line-through}
-.txt em{display:block; font-size:12.5px; color:var(--quiet); font-style:normal; text-decoration:none}
-.reset{
-  margin-top:6px; background:none; border:1px solid var(--rule); border-radius:9px;
-  padding:9px 14px; font-size:13px; color:var(--quiet); font-family:inherit; cursor:pointer;
-}
+/* ── места из вишлиста: пунктир, потому что это желания, а не брони */
+.wishes{margin-top:13px; border-top:1px dashed var(--rule); padding-top:10px}
+.wish-cap{margin:0 0 7px; font-size:9.5px; letter-spacing:.14em; text-transform:uppercase;
+  color:var(--gold); font-weight:700}
+.wish-cap span{color:var(--quiet); font-weight:400; letter-spacing:.04em; text-transform:none;
+  font-size:10px}
+.wishes ul{list-style:none; margin:0; padding:0}
+.wishes li{padding:4px 0 4px 14px; position:relative; line-height:1.3}
+.wishes li::before{content:"◇"; position:absolute; left:0; top:4px; font-size:8.5px;
+  color:var(--gold)}
+.wishes b{font-size:12px; font-weight:600}
+.wishes .where{font-size:10px; color:var(--quiet); margin-left:5px}
+.wishes .what{display:block; font-size:10.5px; color:var(--quiet); line-height:1.35}
+.wishes .none{margin:0; font-size:10.5px; color:var(--quiet); line-height:1.35;
+  border:1px dashed var(--rule); border-radius:5px; padding:6px 8px}
+.wish-more{margin-top:4px}
+.wish-more summary{cursor:pointer; font-size:10.5px; color:var(--deep)}
+.cancelled{list-style:none; margin:12px 0 0; padding:0; font-size:11.5px; color:var(--quiet)}
+.cancelled li{display:flex; flex-wrap:wrap; gap:0 8px; align-items:baseline}
+.cancelled b{text-decoration:line-through; font-weight:600}
+.cancelled .usd{font-family:var(--sans); font-size:11.5px; font-weight:600}
+.cancelled .jpy{font-family:var(--num); font-size:11px; margin-left:5px}
 
-/* ── по дням */
-.days{list-style:none; margin:0; padding:0}
-.days li{display:flex; gap:14px; padding:11px 0; border-bottom:1px solid var(--rule)}
-.days .date{width:38px; flex:none; text-align:center}
-.days .date b{display:block; font-family:var(--serif); font-size:21px; line-height:1}
-.days .date span{font-size:10.5px; color:var(--quiet); letter-spacing:.06em}
-.days .body{flex:1; min-width:0}
-.days .base{margin:0; font-size:14.5px; font-weight:600}
-.days .title{margin:1px 0 0; font-size:13px; color:var(--gold); font-weight:600}
-.days ul{list-style:none; margin:5px 0 0; padding:0}
-.days ul li{display:block; border:0; padding:1px 0 1px 14px; font-size:13px; color:var(--quiet); position:relative}
-.days ul li::before{content:"·"; position:absolute; left:4px; font-weight:700}
-.days .empty{margin:3px 0 0; font-size:12.5px; color:var(--quiet); opacity:.6}
-.days .move .date b{color:var(--deep)}
-.days .move{background:linear-gradient(90deg,var(--deep-soft),transparent 62%)}
-.days .clash .date b{color:var(--fire)}
-.days .clash{background:linear-gradient(90deg,var(--fire-soft),transparent 62%)}
-.days .noted .date b{color:var(--gold)}
-
-/* ── багаж */
-.moves{list-style:none; margin:0 0 16px; padding:0; display:grid; gap:11px}
-.moves li{background:var(--card); border:1px solid var(--rule); border-radius:12px; padding:13px 15px}
-.moves .when{margin:0; font-size:11px; letter-spacing:.12em; text-transform:uppercase; color:var(--gold)}
-.moves .path{margin:6px 0 0; font-size:15.5px; font-family:var(--serif); display:flex; gap:8px; flex-wrap:wrap; align-items:baseline}
-.moves .path i{color:var(--deep); font-style:normal}
-.moves .how{margin:5px 0 0; font-size:13.5px; color:var(--deep); font-weight:600}
-.moves .note{margin:2px 0 0; font-size:12.5px; color:var(--quiet)}
-.always{list-style:none; margin:0; padding:0; font-size:13.5px; color:var(--quiet)}
-.always li{padding:4px 0 4px 18px; position:relative}
-.always li::before{content:"✓"; position:absolute; left:0; color:var(--moss); font-size:12px}
-
-/* ── деньги */
-.grand{margin:0; font-family:var(--serif); font-size:38px; line-height:1}
-.grand span{display:block; font-family:var(--sans); font-size:12px; letter-spacing:.1em;
-  text-transform:uppercase; color:var(--quiet); margin-top:5px}
-.bar{display:flex; height:9px; border-radius:99px; overflow:hidden; margin:16px 0 13px; background:var(--rule)}
-.seg.paid{background:var(--moss)}
-.seg.due{background:var(--fire)}
-.seg.onsite{background:var(--deep)}
-.legend{list-style:none; margin:0 0 18px; padding:0; display:grid; gap:9px}
-.legend li{display:flex; align-items:baseline; gap:10px; padding-left:16px; position:relative; font-size:13.5px}
-.legend li::before{content:""; position:absolute; left:0; top:6px; width:9px; height:9px; border-radius:3px}
+/* ── деньги и пустые места */
+.ledger{display:flex; flex-wrap:wrap; gap:22px 40px; align-items:flex-start;
+  margin-top:20px; padding-top:16px; border-top:1px solid var(--rule)}
+.ledger .cap{margin:0; font-size:9.5px; letter-spacing:.17em; text-transform:uppercase;
+  color:var(--quiet)}
+.total{flex:1 1 340px; max-width:430px}
+.total .sum{margin:6px 0 0; display:flex; align-items:baseline; gap:11px}
+.total .usd{font-size:38px; line-height:1; letter-spacing:-.02em}
+.total .jpy{font-family:var(--num); font-size:14px; color:var(--quiet)}
+.total .fx{margin:6px 0 0; font-size:10.5px; color:var(--quiet); line-height:1.5}
+.bar{display:flex; height:7px; border-radius:99px; overflow:hidden; margin:12px 0 10px;
+  background:var(--hair)}
+.seg.paid{background:var(--moss)} .seg.due{background:var(--fire)} .seg.onsite{background:var(--gold)}
+.legend{list-style:none; margin:0; padding:0; display:flex; flex-wrap:wrap; gap:4px 18px;
+  font-size:11px}
+.legend li{padding-left:13px; position:relative; color:var(--quiet)}
+.legend li::before{content:""; position:absolute; left:0; top:5px; width:8px; height:8px;
+  border-radius:2px}
 .legend .paid::before{background:var(--moss)}
 .legend .due::before{background:var(--fire)}
-.legend .onsite::before{background:var(--deep)}
-.legend b{font-family:var(--serif); font-size:16px}
-.legend span{color:var(--quiet)}
-.breakdown{list-style:none; margin:0; padding:0; border-top:1px solid var(--rule)}
-.breakdown li{display:flex; justify-content:space-between; gap:14px; padding:8px 0;
-  border-bottom:1px solid var(--rule); font-size:14px}
-.breakdown b{font-family:var(--serif); font-size:15px; white-space:nowrap}
-.caveats{list-style:none; margin:0; padding:0; font-size:13px; color:var(--quiet)}
-.caveats li{padding:3px 0 3px 16px; position:relative}
-.caveats li::before{content:"+"; position:absolute; left:2px; color:var(--gold)}
+.legend .onsite::before{background:var(--gold)}
+.legend b{font-family:var(--num); color:var(--ink); margin-right:5px}
+.beyond{flex:1 1 250px; max-width:330px}
+.caveats{list-style:none; margin:8px 0 0; padding:0; font-size:11px; color:var(--quiet)}
+.caveats li{padding:2px 0 2px 12px; position:relative; line-height:1.45}
+.caveats li::before{content:"+"; position:absolute; left:0; color:var(--gold)}
+.unknown{margin-left:auto}
+.unknown .slots{display:flex; gap:9px; margin-top:8px; flex-wrap:wrap}
+.blank{width:132px; border:1px dashed var(--rule); border-radius:4px; padding:8px 10px 7px;
+  background:rgba(255,255,255,.28)}
+.blank .slot{display:block; height:14px; border-bottom:1px solid var(--rule)}
+.blank b{display:block; font-size:11.5px; margin-top:6px; line-height:1.2}
+.blank .nt{display:block; font-size:9.5px; color:var(--quiet); margin-top:2px}
 
-/* ── заметки */
-.notes{list-style:none; margin:0; padding:0; font-size:14px; color:var(--quiet)}
-.notes li{padding:6px 0 6px 18px; position:relative; border-bottom:1px solid var(--rule)}
-.notes li::before{content:"※"; position:absolute; left:0; font-size:11px; color:var(--gold)}
-.colophon{margin:18px 0 0; font-size:12.5px; color:var(--quiet); font-style:italic; line-height:1.6}
+/* ── свёрнутое: списки, дни, багаж */
+.more{border-bottom:1px solid var(--hair)}
+.more:first-of-type{border-top:1px solid var(--rule); margin-top:26px}
+.more > summary{cursor:pointer; list-style:none; padding:13px 2px; font-size:13px;
+  letter-spacing:.14em; text-transform:uppercase; color:var(--quiet); font-weight:700;
+  display:flex; align-items:center; gap:10px; min-height:44px}
+.more > summary::-webkit-details-marker{display:none}
+.more > summary::before{content:"+"; font-size:15px; color:var(--gold); width:12px}
+.more[open] > summary::before{content:"–"}
+.more > div{padding:0 2px 22px}
+.sec-note{font-size:12px; color:var(--quiet); margin:0 0 14px}
+.todo-cols{display:grid; gap:0 30px}
+.todo-group{margin:0 0 16px}
+.todo-group h3{font-size:14px; margin-bottom:5px; color:var(--gold)}
+.todo-group ul{list-style:none; margin:0; padding:0}
+.todo-group li{border-bottom:1px solid var(--hair)}
+.todo-group label{display:flex; gap:11px; align-items:flex-start; padding:10px 2px; cursor:pointer}
+.todo-group input{position:absolute; opacity:0; width:0; height:0}
+.tick{flex:none; width:20px; height:20px; margin-top:1px; border-radius:6px;
+  border:1.5px solid var(--rule); background:var(--card); position:relative}
+input:checked + .tick{background:var(--moss); border-color:var(--moss)}
+input:checked + .tick::after{content:""; position:absolute; left:6px; top:2px; width:5px;
+  height:10px; border:solid #fff; border-width:0 2px 2px 0; transform:rotate(42deg)}
+input:focus-visible + .tick{outline:2px solid var(--gold); outline-offset:2px}
+.txt{font-size:14px}
+input:checked ~ .txt{color:var(--quiet); text-decoration:line-through}
+.txt em{display:block; font-size:12px; color:var(--quiet); font-style:normal; text-decoration:none}
+.reset{margin-top:6px; background:none; border:1px solid var(--rule); border-radius:8px;
+  padding:10px 14px; font-size:12.5px; color:var(--quiet); font-family:inherit; cursor:pointer}
+.days{list-style:none; margin:0; padding:0; columns:1}
+.days li{display:flex; gap:13px; padding:9px 0; border-bottom:1px solid var(--hair);
+  break-inside:avoid}
+.days .date{width:34px; flex:none; text-align:center}
+.days .date b{display:block; font-family:var(--serif); font-size:19px; line-height:1}
+.days .date span{font-size:10px; color:var(--quiet)}
+.days .base{margin:0; font-size:13.5px; font-weight:600}
+.days .title{margin:1px 0 0; font-size:12px; color:var(--gold); font-weight:600}
+.days .body ul{list-style:none; margin:4px 0 0; padding:0}
+.days .body li{display:block; border:0; padding:1px 0 1px 12px; font-size:12px;
+  color:var(--quiet); position:relative}
+.days .body li::before{content:"·"; position:absolute; left:3px}
+.days .empty{margin:2px 0 0; font-size:11.5px; color:var(--quiet); opacity:.6}
+.days .move .date b{color:var(--gold)}
+.days .clash .date b{color:var(--fire)}
+.moves{list-style:none; margin:0 0 14px; padding:0; display:grid; gap:10px}
+#luggage .moves li{background:var(--card); border:1px solid var(--hair); border-radius:10px;
+  padding:12px 14px}
+#luggage .when{margin:0; font-size:10px; letter-spacing:.12em; text-transform:uppercase;
+  color:var(--gold)}
+#luggage .path{margin:5px 0 0; font-size:14.5px; font-family:var(--serif); display:flex;
+  gap:8px; flex-wrap:wrap; align-items:baseline}
+#luggage .path i{color:var(--gold); font-style:normal}
+#luggage .how{margin:4px 0 0; font-size:12.5px; font-weight:600}
+#luggage .note{margin:1px 0 0; font-size:11.5px; color:var(--quiet)}
+#luggage .lead{margin:0 0 12px; font-size:14px}
+.always{list-style:none; margin:0; padding:0; font-size:12.5px; color:var(--quiet)}
+.always li{padding:3px 0 3px 17px; position:relative}
+.always li::before{content:"✓"; position:absolute; left:0; color:var(--moss); font-size:11px}
 
+.colophon{margin-top:22px; padding-top:14px; border-top:1px solid var(--hair);
+  font-size:11px; color:var(--quiet); display:flex; flex-wrap:wrap; gap:4px 10px}
+
+/* ── экраны поуже: нитка встаёт столбиком, карточки в один ряд */
 @media (min-width:560px){
-  .hero h1{font-size:60px}
-  .hero .kanji{font-size:170px}
-  .stay dl.facts{grid-template-columns:1fr 1fr}
-  .stay dl.facts > div{flex-direction:column; gap:1px}
-  .stay dt{width:auto}
+  .sheet{padding:26px 22px 40px}
+  .masthead h1{font-size:52px}
+  .todo-cols{grid-template-columns:1fr 1fr}
+}
+@media (min-width:1000px){
+  .masthead h1{font-size:58px}
+  .days{columns:2; column-gap:34px}
+  .todo-cols{grid-template-columns:repeat(4,1fr)}
+}
+@media (max-width:1000px){
+  .cities{grid-template-columns:1fr 1fr}
+}
+@media (max-width:700px){
+  .cities{grid-template-columns:1fr}
+  .thread .row{display:block}
+  .thread .row > *{grid-column:auto !important}
+  .thread .caps{display:none}
+  .thread .bar{height:auto; padding:10px 13px; margin-bottom:5px; align-items:baseline;
+    flex-wrap:wrap; gap:2px 10px}
+  .thread .bar .who{display:block; order:-2; flex:1 1 100%; font-size:13.5px; font-weight:600}
+  .thread .bar .edge{position:static; color:rgba(255,255,255,.72); font-size:10.5px}
+  .thread .bar .edge.o{display:none}
+  .thread .bar .n{order:-1; flex:none}
+  .thread .home{flex-direction:row; align-items:baseline; gap:8px; height:auto;
+    border-left:0; padding:6px 0 0}
+  .thread .dates,.thread .moves{display:none}
+  .thread .paidrow{height:auto}
+  .thread .paidbar{height:auto; opacity:1; background:none !important; margin-top:4px}
+  .thread .paidbar span{position:static; white-space:normal; display:block}
+  .alert{display:block}
+  .alert .facts{display:block; margin-top:8px}
+  .unknown{margin-left:0}
+  .blank{flex:1 1 100px; width:auto}
+  /* Пальцем попадать: карта, телефон и все свёртки — не мельче 36px. */
+  .btn,.fine summary,.wish-more summary{min-height:36px; display:flex; align-items:center}
+  .rows dd{font-size:12.5px}
+  .city .inner,.city .cap{padding-left:16px; padding-right:16px}
 }
 @media (prefers-reduced-motion:no-preference){
   html{scroll-behavior:smooth}
@@ -939,19 +1174,10 @@ JS = """
 def render(trip: dict) -> str:
     stays = sorted(trip["stays"], key=lambda s: (s["checkin"]["date"], s["checkout"]["date"]))
     alerts = trip.get("alerts", [])
+    places = trip.get("places", [])
+    all_legs = legs(stays)
     t = trip["trip"]
-
-    nav_items = [("timeline", "Маршрут"), ("stays", "Жильё"), ("todo", "Решить"),
-                 ("days", "По дням"), ("luggage", "Багаж"), ("budget", "Деньги")]
-    nav = "".join(f'<li><a href="#{i}">{e(n)}</a></li>' for i, n in nav_items)
-    if alerts:
-        first = alerts[0]
-        hot = first["level"] == "red"
-        label = "Нужно решение" if hot else e(first["title"])
-        nav = (
-            f'<li><a class="{"hot" if hot else ""}" href="#{e(first["id"])}">{label}</a></li>'
-            + nav
-        )
+    nights = (d(t["end"]) - d(t["start"])).days
 
     return f"""<!doctype html>
 <html lang="ru">
@@ -959,24 +1185,21 @@ def render(trip: dict) -> str:
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="robots" content="noindex, nofollow, noarchive">
-<meta name="theme-color" content="#f7f3ec" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#f2eee7" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="#14181c" media="(prefers-color-scheme: dark)">
 <title>{e(t["title"])} {e(t["year"])} — {e(t["subtitle"])}</title>
 <style>{CSS}</style>
 </head>
-<body>
-<div class="wrap">{hero(trip, stays, alerts)}</div>
-<nav class="jump"><ul>{nav}</ul></nav>
-<main class="wrap">
+<body style="--nights:{nights}">
+<div class="sheet">
+  {masthead(trip, stays, all_legs)}
+  {thread(trip, all_legs)}
   {alert_block(alerts)}
-  {timeline(trip, stays, alerts)}
-  {stay_cards(stays, alerts, trip.get("cancelled", []))}
-  {checklist(trip)}
-  {by_day(trip, stays, alerts)}
-  {luggage(trip)}
-  {budget(stays, trip["notes"])}
-  {notes_block(trip)}
-</main>
+  {city_cards(all_legs, alerts, places, trip.get("cancelled", []))}
+  {ledger(trip, stays, all_legs)}
+  {more_block(trip, stays, alerts)}
+  {colophon(trip)}
+</div>
 <script>{JS}</script>
 </body>
 </html>
@@ -996,6 +1219,7 @@ a{color:#2f4a5c}@media(prefers-color-scheme:dark){body{background:#14181c;color:
 
 def main() -> int:
     trip = json.loads(DATA.read_text(encoding="utf-8"))
+    load_fx(trip)
 
     try:
         said = check(trip)
@@ -1022,6 +1246,13 @@ def main() -> int:
     shutil.copytree(SITE / "functions", DIST / "functions")
     for name in ("_routes.json", "_headers", "robots.txt"):
         shutil.copy(SITE / name, DIST / name)
+
+    # Три вида, по которым Ни выбирала главную, живут по адресу /vidy/. Сборка
+    # стирает dist/ целиком, поэтому положенное туда руками исчезает молча —
+    # и ссылка, уже отданная ей, ломается следующей же выкладкой. Их место —
+    # в site/, рядом с дверью и заголовками.
+    if (SITE / "vidy").is_dir():
+        shutil.copytree(SITE / "vidy", DIST / "vidy")
 
     size = sum(f.stat().st_size for f in DIST.rglob("*") if f.is_file())
     pages = len(list(DIST.rglob("*.html")))

@@ -1,0 +1,120 @@
+<!doctype html><html lang="ru"><head><meta charset="utf-8"><title>Япония · нитка</title><style>
+@font-face{font-family:Prata;src:url(fonts/prata-cyr.woff2)format('woff2');unicode-range:U+0400-045F,U+0490-0491,U+04B0-04B1,U+2116;font-display:block}
+@font-face{font-family:Prata;src:url(fonts/prata-lat.woff2)format('woff2');font-display:block}
+@font-face{font-family:Golos;src:url(fonts/golos-cyr.woff2)format('woff2');font-weight:400 900;unicode-range:U+0400-045F,U+0490-0491,U+04B0-04B1,U+2116;font-display:block}
+@font-face{font-family:Golos;src:url(fonts/golos-lat.woff2)format('woff2');font-weight:400 900;font-display:block}
+@font-face{font-family:Plex;src:url(fonts/plexmono-cyr-400.woff2)format('woff2');font-weight:400;unicode-range:U+0400-045F,U+0490-0491,U+04B0-04B1,U+2116;font-display:block}
+@font-face{font-family:Plex;src:url(fonts/plexmono-lat-400.woff2)format('woff2');font-weight:400;font-display:block}
+@font-face{font-family:Plex;src:url(fonts/plexmono-cyr-500.woff2)format('woff2');font-weight:500;unicode-range:U+0400-045F,U+0490-0491,U+04B0-04B1,U+2116;font-display:block}
+@font-face{font-family:Plex;src:url(fonts/plexmono-lat-500.woff2)format('woff2');font-weight:500;font-display:block}
+
+*{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --paper:#F2EEE7; --card:#FCFAF6; --ink:#1E1B18; --mute:#8B8275;
+  --line:#E0D8CA; --hair:#EBE4D8;
+}
+html,body{height:100%}
+body{
+  background:var(--paper); color:var(--ink);
+  font-family:Golos,-apple-system,system-ui,sans-serif;
+  -webkit-font-smoothing:antialiased;
+  padding:40px 54px 34px;
+  display:flex; flex-direction:column;
+  font-size:14px; line-height:1.45;
+}
+.mono{font-family:Plex,ui-monospace,monospace;font-variant-numeric:tabular-nums}
+.hdr{display:flex;align-items:flex-end;justify-content:space-between;flex:none}
+.hdr h1{font-family:Prata;font-weight:400;font-size:46px;line-height:.95;letter-spacing:-.01em}
+.hdr .when{font-family:Plex;font-size:15px;letter-spacing:.06em;color:var(--mute);margin-top:10px}
+.hdr .when b{color:var(--ink);font-weight:500}
+.view-tag{font-family:Plex;font-size:11px;letter-spacing:.18em;text-transform:uppercase;color:var(--mute);
+  text-align:right;line-height:1.7}
+.view-tag b{display:block;color:var(--ink);font-weight:500;font-size:12px;letter-spacing:.16em}
+.rule{height:1px;background:var(--line);flex:none}
+
+/* нижняя полоса: деньги слева, непосчитанное справа */
+.foot{display:flex;align-items:flex-end;justify-content:space-between;gap:40px;flex:none}
+.total .lbl{font-family:Plex;font-size:10.5px;letter-spacing:.17em;text-transform:uppercase;color:var(--mute)}
+.total .sum{display:flex;align-items:baseline;gap:12px;margin-top:6px}
+.total .usd{font-size:38px;font-weight:600;letter-spacing:-.02em;line-height:1}
+.total .jpy{font-family:Plex;font-size:15px;color:var(--mute)}
+.total .rate{font-family:Plex;font-size:10.5px;color:var(--mute);margin-top:7px;letter-spacing:.03em}
+.unknown{display:flex;flex-direction:column;align-items:flex-end}
+.unknown .cap{font-family:Plex;font-size:10.5px;letter-spacing:.17em;text-transform:uppercase;
+  color:var(--mute);margin-bottom:9px}
+.unknown .slots{display:flex;gap:10px}
+.nw{white-space:nowrap}
+.blank{width:132px;border:1px dashed #C9BFAE;border-radius:3px;background:rgba(255,255,255,.35);
+  padding:9px 10px 8px}
+.blank .slot{height:15px;border-bottom:1px solid #D5CBB9}
+.blank .nm{font-size:11.5px;font-weight:600;margin-top:7px;line-height:1.2}
+.blank .nt{font-family:Plex;font-size:9.5px;color:var(--mute);margin-top:2px}
+.note{font-family:Plex;font-size:11px;color:var(--mute);line-height:1.55}
+.note b{font-weight:500;color:#5F574A}
+
+.wrap{flex:1;display:flex;flex-direction:column;justify-content:center;gap:0;padding:6px 0}
+.grid{display:grid;grid-template-columns:repeat(15,1fr) 104px;gap:5px}
+
+.caps{align-items:end;margin-bottom:16px}
+.cap-city{padding-left:2px;padding-right:14px}
+.cap-city .city{font-family:Prata;font-size:28px;line-height:1.05}
+.cap-city .area{font-family:Plex;font-size:11px;letter-spacing:.15em;text-transform:uppercase;
+  color:var(--mute);margin-top:5px}
+.cap-city .hotel{font-size:13.5px;font-weight:600;margin-top:9px;line-height:1.25}
+.cap-city .brand{font-size:11.5px;color:var(--mute);font-weight:400}
+.cap-city .tick{height:12px;border-left:1px solid var(--line);margin-top:10px}
+
+.bars{align-items:stretch}
+.bar{height:116px;border-radius:4px;position:relative;display:flex;align-items:flex-end;
+  padding:0 15px 13px;color:#fff}
+.bar .n{font-family:Plex;font-weight:500;font-size:13px;letter-spacing:.04em;
+  color:rgba(255,255,255,.92)}
+.bar .edge{position:absolute;top:12px;font-family:Plex;font-size:9.5px;letter-spacing:.01em;
+  color:rgba(255,255,255,.66);white-space:nowrap}
+.bar .edge.i{left:13px}
+.bar .edge.o{right:13px}
+.bar.plane{background:transparent;border:1px dashed #B6ACA894;color:var(--mute);
+  background-image:repeating-linear-gradient(45deg,rgba(154,145,134,.13) 0 5px,transparent 5px 10px)}
+.bar.plane .n{color:var(--mute)}
+.home{border-left:1px solid var(--line);padding-left:12px;display:flex;flex-direction:column;
+  justify-content:flex-end;height:116px}
+.home .d{font-family:Prata;font-size:22px;line-height:1}
+.home .t{font-family:Plex;font-size:10.5px;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--mute);margin-top:6px}
+
+.paidrow{margin-top:5px;align-items:center;height:16px}
+.paidbar{height:9px;border-radius:2px;position:relative}
+.paidbar span{position:absolute;left:0;top:13px;white-space:nowrap;font-family:Plex;
+  font-size:10px;color:var(--mute);letter-spacing:.02em}
+
+.dates{margin-top:30px;border-top:1px solid #CDC3B2;padding-top:0}
+.day{text-align:center;padding-top:11px;position:relative}
+.day::before{content:"";position:absolute;left:50%;top:0;width:1px;height:5px;background:#CDC3B2}
+.day .num{font-family:Plex;font-size:14.5px;font-weight:500}
+.day .wd{font-family:Plex;font-size:9.5px;color:var(--mute);letter-spacing:.09em;margin-top:2px}
+.day.we .wd{color:#A2937E}
+.day.we .num{color:#6E655A}
+
+.moves{margin-top:18px;height:20px}
+.move{display:flex;align-items:center;gap:6px;font-family:Plex;font-size:10.5px;color:#6E655A;
+  letter-spacing:.02em;white-space:nowrap;margin-left:-3px}
+.move i{width:0;height:0;border-left:5px solid #A99C88;border-top:3.5px solid transparent;
+  border-bottom:3.5px solid transparent;flex:none}
+
+.money{margin-top:26px}
+.pay{padding-left:2px;border-left:2px solid}
+.pay .usd{font-size:30px;font-weight:600;letter-spacing:-.02em;line-height:1;margin-left:9px}
+.pay .jpy{font-family:Plex;font-size:11px;color:var(--mute);margin-left:9px;display:block;margin-top:5px}
+.foot{padding-top:24px;border-top:1px solid var(--line)}
+</style></head><body><div class="hdr">
+  <div>
+    <h1>Япония</h1>
+    <div class="when"><b>4 — 19 января 2027</b> · 15 ночей · 4 переезда</div>
+  </div>
+  <div class="view-tag">вид 1<b>нитка</b></div>
+</div><div class="wrap"><div class="grid caps"><div style="grid-column:1/span 1" class="cap-city"><div class="area">ночь</div><div class="hotel" style="color:var(--mute)">в самолёте</div><div class="tick"></div></div><div class="cap-city" style="grid-column:2/span 4"><div class="city">Токио</div><div class="area">Гиндза</div><div class="hotel">lyf Ginza Tokyo</div><div class="tick"></div></div><div class="cap-city" style="grid-column:6/span 4"><div class="city">Киото</div><div class="area">Сандзё</div><div class="hotel">OMO5 Kyoto Sanjo<span class="brand"> · Hoshino Resorts</span></div><div class="tick"></div></div><div class="cap-city" style="grid-column:10/span 2"><div class="city">Киносаки</div><div class="area">онсэн</div><div class="hotel">Morizuya<span class="brand"> · рёкан</span></div><div class="tick"></div></div><div class="cap-city" style="grid-column:12/span 4"><div class="city">Токио</div><div class="area">Асакуса</div><div class="hotel">OMO3 Asakusa<span class="brand"> · Hoshino Resorts</span></div><div class="tick"></div></div></div><div class="grid bars"><div class="bar plane" style="grid-column:1/span 1"><span class="n">вылет</span></div><div class="bar" style="grid-column:2/span 4;background:#2F4B7C"><span class="edge i">с 15:00</span><span class="edge o">до 11:00</span><span class="n">4 ночи</span></div><div class="bar" style="grid-column:6/span 4;background:#B0512A"><span class="edge i">15:00–00:00</span><span class="edge o">до 11:00</span><span class="n">4 ночи</span></div><div class="bar" style="grid-column:10/span 2;background:#3A6B57"><span class="edge i">15:00–18:30</span><span class="n">2 ночи</span></div><div class="bar" style="grid-column:12/span 4;background:#6A4A7E"><span class="edge i">15:00–00:00</span><span class="edge o">до 11:00</span><span class="n">4 ночи</span></div><div class="home" style="grid-column:16"><div class="d">19</div><div class="t">домой</div></div></div><div class="grid paidrow"><div class="paidbar" style="grid-column:11/span 5;background:#6A4A7E;opacity:.42"><span>оплачено с 14-го · ночь с 14 на 15 ты в Киносаки</span></div></div><div class="grid dates"><div class="day on"><div class="num">4</div><div class="wd">пн</div></div><div class="day on"><div class="num">5</div><div class="wd">вт</div></div><div class="day on"><div class="num">6</div><div class="wd">ср</div></div><div class="day on"><div class="num">7</div><div class="wd">чт</div></div><div class="day on"><div class="num">8</div><div class="wd">пт</div></div><div class="day on we"><div class="num">9</div><div class="wd">сб</div></div><div class="day on we"><div class="num">10</div><div class="wd">вс</div></div><div class="day on"><div class="num">11</div><div class="wd">пн</div></div><div class="day on"><div class="num">12</div><div class="wd">вт</div></div><div class="day on"><div class="num">13</div><div class="wd">ср</div></div><div class="day on"><div class="num">14</div><div class="wd">чт</div></div><div class="day on"><div class="num">15</div><div class="wd">пт</div></div><div class="day on we"><div class="num">16</div><div class="wd">сб</div></div><div class="day on we"><div class="num">17</div><div class="wd">вс</div></div><div class="day on"><div class="num">18</div><div class="wd">пн</div></div><div class="day" style="grid-column:16"><div class="num">19</div><div class="wd">вт</div></div></div><div class="grid moves"><div class="move" style="grid-column:2/span 4"><i></i>прилёт в Токио</div><div class="move" style="grid-column:6/span 4"><i></i>Токио → Киото</div><div class="move" style="grid-column:10/span 4"><i></i>Киото → Киносаки</div><div class="move" style="grid-column:12/span 4"><i></i>Киносаки → Токио</div><div class="move" style="grid-column:16/span 2"><i></i>домой</div></div><div class="grid money"><div class="pay" style="grid-column:2/span 4;border-color:#2F4B7C"><span class="usd">$362</span><span class="jpy">¥57 442</span></div><div class="pay" style="grid-column:6/span 4;border-color:#B0512A"><span class="usd">$405</span><span class="jpy">¥64 350</span></div><div class="pay" style="grid-column:10/span 2;border-color:#3A6B57"><span class="usd">$342</span><span class="jpy">¥54 320</span></div><div class="pay" style="grid-column:12/span 4;border-color:#6A4A7E"><span class="usd">$767</span><span class="jpy">¥121 800</span></div></div></div><div class="foot"><div class="total">
+  <div class="lbl">Ночёвки · все пять броней</div>
+  <div class="sum"><div class="usd">$1 876</div>
+    <div class="jpy">¥297 912</div></div>
+  <div class="rate">$1 = ¥158.88 · курс на 23 августа 2026 · платишь в иенах</div>
+</div><div style="flex:1"><div class="note" style="max-width:250px"><b>Ночь с 14 на 15 января</b> оплачена в двух городах сразу — ты ночуешь в Моридзуя, OMO3 оплачен с 14-го. Так и задумано, обе суммы в сумме ниже.</div></div><div class="unknown"><div class="cap">Ещё не&nbsp;посчитано</div><div class="slots"><div class="blank"><div class="slot"></div><div class="nm">Перелёт</div><div class="nt">туда и обратно</div></div><div class="blank"><div class="slot"></div><div class="nm">Поезда</div><div class="nt">четыре переезда</div></div><div class="blank"><div class="slot"></div><div class="nm">Еда, входы, онсэны</div><div class="nt">на месте</div></div></div></div></div></body></html>

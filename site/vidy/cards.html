@@ -1,0 +1,182 @@
+<!doctype html><html lang="ru"><head><meta charset="utf-8"><title>Япония · города</title><style>
+@font-face{font-family:Prata;src:url(fonts/prata-cyr.woff2)format('woff2');unicode-range:U+0400-045F,U+0490-0491,U+04B0-04B1,U+2116;font-display:block}
+@font-face{font-family:Prata;src:url(fonts/prata-lat.woff2)format('woff2');font-display:block}
+@font-face{font-family:Golos;src:url(fonts/golos-cyr.woff2)format('woff2');font-weight:400 900;unicode-range:U+0400-045F,U+0490-0491,U+04B0-04B1,U+2116;font-display:block}
+@font-face{font-family:Golos;src:url(fonts/golos-lat.woff2)format('woff2');font-weight:400 900;font-display:block}
+@font-face{font-family:Plex;src:url(fonts/plexmono-cyr-400.woff2)format('woff2');font-weight:400;unicode-range:U+0400-045F,U+0490-0491,U+04B0-04B1,U+2116;font-display:block}
+@font-face{font-family:Plex;src:url(fonts/plexmono-lat-400.woff2)format('woff2');font-weight:400;font-display:block}
+@font-face{font-family:Plex;src:url(fonts/plexmono-cyr-500.woff2)format('woff2');font-weight:500;unicode-range:U+0400-045F,U+0490-0491,U+04B0-04B1,U+2116;font-display:block}
+@font-face{font-family:Plex;src:url(fonts/plexmono-lat-500.woff2)format('woff2');font-weight:500;font-display:block}
+
+*{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --paper:#F2EEE7; --card:#FCFAF6; --ink:#1E1B18; --mute:#8B8275;
+  --line:#E0D8CA; --hair:#EBE4D8;
+}
+html,body{height:100%}
+body{
+  background:var(--paper); color:var(--ink);
+  font-family:Golos,-apple-system,system-ui,sans-serif;
+  -webkit-font-smoothing:antialiased;
+  padding:40px 54px 34px;
+  display:flex; flex-direction:column;
+  font-size:14px; line-height:1.45;
+}
+.mono{font-family:Plex,ui-monospace,monospace;font-variant-numeric:tabular-nums}
+.hdr{display:flex;align-items:flex-end;justify-content:space-between;flex:none}
+.hdr h1{font-family:Prata;font-weight:400;font-size:46px;line-height:.95;letter-spacing:-.01em}
+.hdr .when{font-family:Plex;font-size:15px;letter-spacing:.06em;color:var(--mute);margin-top:10px}
+.hdr .when b{color:var(--ink);font-weight:500}
+.view-tag{font-family:Plex;font-size:11px;letter-spacing:.18em;text-transform:uppercase;color:var(--mute);
+  text-align:right;line-height:1.7}
+.view-tag b{display:block;color:var(--ink);font-weight:500;font-size:12px;letter-spacing:.16em}
+.rule{height:1px;background:var(--line);flex:none}
+
+/* нижняя полоса: деньги слева, непосчитанное справа */
+.foot{display:flex;align-items:flex-end;justify-content:space-between;gap:40px;flex:none}
+.total .lbl{font-family:Plex;font-size:10.5px;letter-spacing:.17em;text-transform:uppercase;color:var(--mute)}
+.total .sum{display:flex;align-items:baseline;gap:12px;margin-top:6px}
+.total .usd{font-size:38px;font-weight:600;letter-spacing:-.02em;line-height:1}
+.total .jpy{font-family:Plex;font-size:15px;color:var(--mute)}
+.total .rate{font-family:Plex;font-size:10.5px;color:var(--mute);margin-top:7px;letter-spacing:.03em}
+.unknown{display:flex;flex-direction:column;align-items:flex-end}
+.unknown .cap{font-family:Plex;font-size:10.5px;letter-spacing:.17em;text-transform:uppercase;
+  color:var(--mute);margin-bottom:9px}
+.unknown .slots{display:flex;gap:10px}
+.nw{white-space:nowrap}
+.blank{width:132px;border:1px dashed #C9BFAE;border-radius:3px;background:rgba(255,255,255,.35);
+  padding:9px 10px 8px}
+.blank .slot{height:15px;border-bottom:1px solid #D5CBB9}
+.blank .nm{font-size:11.5px;font-weight:600;margin-top:7px;line-height:1.2}
+.blank .nt{font-family:Plex;font-size:9.5px;color:var(--mute);margin-top:2px}
+.note{font-family:Plex;font-size:11px;color:var(--mute);line-height:1.55}
+.note b{font-weight:500;color:#5F574A}
+
+.route{display:flex;align-items:center;gap:14px;margin-top:20px;padding-bottom:16px;
+  border-bottom:1px solid var(--line);flex:none}
+.route .leg{display:flex;align-items:baseline;gap:9px}
+.route .dot{width:7px;height:7px;border-radius:50%;flex:none;align-self:center}
+.route .nm{font-family:Prata;font-size:16px}
+.route .dt{font-family:Plex;font-size:10.5px;color:var(--mute);letter-spacing:.03em}
+.route i{width:0;height:0;border-left:5px solid #C3B7A4;border-top:3.5px solid transparent;
+  border-bottom:3.5px solid transparent;flex:none;margin:0 3px}
+.route .plane{font-family:Plex;font-size:10.5px;color:var(--mute);letter-spacing:.03em}
+
+.cards{flex:1;display:grid;grid-template-columns:repeat(4,1fr);gap:18px;padding:20px 0 4px;min-height:0}
+.card{background:var(--card);border:1px solid var(--hair);border-radius:5px;
+  display:flex;flex-direction:column;overflow:hidden}
+.card .top{padding:14px 16px 13px;color:#fff}
+.card .top .city{font-family:Prata;font-size:23px;line-height:1}
+.card .top .area{font-family:Plex;font-size:10px;letter-spacing:.18em;text-transform:uppercase;
+  opacity:.82;margin-top:6px}
+.card .body{padding:14px 16px 0;flex:1;display:flex;flex-direction:column}
+.card .hotel{font-size:15px;font-weight:600;line-height:1.2}
+.card .brand{font-family:Plex;font-size:10px;color:var(--mute);letter-spacing:.06em;margin-top:4px}
+.card .when{display:flex;align-items:baseline;gap:8px;margin:13px 0 3px}
+.card .when .dt{font-family:Plex;font-size:14px;font-weight:500}
+.card .when .n{font-family:Plex;font-size:10px;color:var(--mute);letter-spacing:.04em}
+.rows{margin-top:14px;border-top:1px solid var(--hair)}
+.row{display:flex;gap:10px;padding:6px 0;border-bottom:1px solid var(--hair)}
+.row .k{font-family:Plex;font-size:9.5px;letter-spacing:.11em;text-transform:uppercase;
+  color:var(--mute);width:66px;flex:none;padding-top:2px}
+.row .v{font-size:11.5px;line-height:1.35}
+.row .v.mono{font-size:11px}
+.card .price{padding:13px 0 0;display:flex;align-items:baseline;gap:9px}
+.card .price .usd{font-size:29px;font-weight:600;letter-spacing:-.02em;line-height:1}
+.card .price .jpy{font-family:Plex;font-size:11px;color:var(--mute)}
+.card .flag{font-family:Plex;font-size:9.5px;color:#6E655A;line-height:1.45;margin-top:auto;
+  padding:9px 16px 10px;margin-left:-16px;margin-right:-16px;border-top:1px dashed #DDD3C2}
+.card .tail{margin-top:auto;height:14px}
+.foot{margin-top:14px;padding-top:18px;border-top:1px solid var(--line)}
+</style></head><body><div class="hdr">
+  <div>
+    <h1>Япония</h1>
+    <div class="when"><b>4 — 19 января 2027</b> · 15 ночей · 4 переезда</div>
+  </div>
+  <div class="view-tag">вид 3<b>города</b></div>
+</div><div class="route"><div class="leg"><span class="plane">4 января · вылет</span></div><i></i><div class="leg"><span class="dot" style="background:#2F4B7C"></span><span class="nm">Токио</span><span class="dt nw">Гиндза · 5 — 9 января</span></div><i></i><div class="leg"><span class="dot" style="background:#B0512A"></span><span class="nm">Киото</span><span class="dt nw">Сандзё · 9 — 13 января</span></div><i></i><div class="leg"><span class="dot" style="background:#3A6B57"></span><span class="nm">Киносаки</span><span class="dt nw">онсэн · 13 — 15 января</span></div><i></i><div class="leg"><span class="dot" style="background:#6A4A7E"></span><span class="nm">Токио</span><span class="dt nw">Асакуса · 15 — 19 января</span></div><i></i><div class="leg"><span class="plane">19 января · домой</span></div></div><div class="cards"><div class="card">
+  <div class="top" style="background:#2F4B7C">
+    <div class="city">Токио</div><div class="area">Гиндза</div></div>
+  <div class="body">
+    <div class="hotel">lyf Ginza Tokyo</div><div class="brand">&nbsp;</div>
+    <div class="when"><span class="dt">5 — 9 января</span>
+      <span class="n">4 ночи</span></div>
+    <div class="price"><span class="usd">$362</span>
+      <span class="jpy nw">¥57 442</span></div>
+    <div class="rows">
+      <div class="row"><div class="k">Комната</div><div class="v">Good for One · студия</div></div>
+      <div class="row"><div class="k">Еда</div><div class="v">завтрак по желанию, ¥1 500 за ночь</div></div>
+      <div class="row"><div class="k">Заезд</div><div class="v mono">с 15:00</div></div>
+      <div class="row"><div class="k">Выезд</div><div class="v mono">до 11:00</div></div>
+      <div class="row"><div class="k">Адрес</div><div class="v">2-5-4 Kyobashi, Tokyo<br>
+        <span class="mono" style="color:var(--mute)">+81 3-3528-6505</span></div></div>
+      <div class="row"><div class="k">Отмена</div><div class="v">бесплатно до 3 января<br>
+        <span style="color:var(--mute)">оплата на месте</span></div></div>
+    </div>
+    <div class="tail"></div>
+  </div></div><div class="card">
+  <div class="top" style="background:#B0512A">
+    <div class="city">Киото</div><div class="area">Сандзё</div></div>
+  <div class="body">
+    <div class="hotel">OMO5 Kyoto Sanjo</div><div class="brand">Hoshino Resorts</div>
+    <div class="when"><span class="dt">9 — 13 января</span>
+      <span class="n">4 ночи</span></div>
+    <div class="price"><span class="usd">$405</span>
+      <span class="jpy nw">¥64 350</span></div>
+    <div class="rows">
+      <div class="row"><div class="k">Комната</div><div class="v">Queen · душ</div></div>
+      <div class="row"><div class="k">Еда</div><div class="v">завтрак включён</div></div>
+      <div class="row"><div class="k">Заезд</div><div class="v mono">15:00 — 00:00</div></div>
+      <div class="row"><div class="k">Выезд</div><div class="v mono">до 11:00</div></div>
+      <div class="row"><div class="k">Адрес</div><div class="v">434-1 Ebisu-cho, Nakagyo-ku, Kyoto<br>
+        <span class="mono" style="color:var(--mute)">+81 75-221-0711</span></div></div>
+      <div class="row"><div class="k">Отмена</div><div class="v">бесплатно до 18 декабря<br>
+        <span style="color:var(--mute)">оплата на месте</span></div></div>
+    </div>
+    <div class="tail"></div>
+  </div></div><div class="card">
+  <div class="top" style="background:#3A6B57">
+    <div class="city">Киносаки</div><div class="area">онсэн</div></div>
+  <div class="body">
+    <div class="hotel">Morizuya</div><div class="brand">рёкан</div>
+    <div class="when"><span class="dt">13 — 15 января</span>
+      <span class="n">2 ночи</span></div>
+    <div class="price"><span class="usd">$342</span>
+      <span class="jpy nw">¥54 320</span></div>
+    <div class="rows">
+      <div class="row"><div class="k">Комната</div><div class="v">японская комната, ванная общая</div></div>
+      <div class="row"><div class="k">Еда</div><div class="v">ужин и завтрак включены</div></div>
+      <div class="row"><div class="k">Заезд</div><div class="v mono">15:00 — 18:30</div></div>
+      <div class="row"><div class="k">Выезд</div><div class="v mono">07:00 — 10:00</div></div>
+      <div class="row"><div class="k">Адрес</div><div class="v">Kinosaki-cho Yushima 417, Toyooka<br>
+        <span class="mono" style="color:var(--mute)">+81 796-32-2106</span></div></div>
+      <div class="row"><div class="k">Отмена</div><div class="v">бесплатно до 10 января<br>
+        <span style="color:var(--mute)">оплата на месте · две брони по <span class="nw">¥27 160</span></span></div></div>
+    </div>
+    <div class="flag">Две отдельные брони по одной ночи — заселение обе даты до 18:30, ужин по времени.</div>
+  </div></div><div class="card">
+  <div class="top" style="background:#6A4A7E">
+    <div class="city">Токио</div><div class="area">Асакуса</div></div>
+  <div class="body">
+    <div class="hotel">OMO3 Asakusa</div><div class="brand">Hoshino Resorts</div>
+    <div class="when"><span class="dt">14 — 19 января</span>
+      <span class="n">5 ночей</span></div>
+    <div class="price"><span class="usd">$767</span>
+      <span class="jpy nw">¥121 800</span></div>
+    <div class="rows">
+      <div class="row"><div class="k">Комната</div><div class="v">YAGURA</div></div>
+      <div class="row"><div class="k">Еда</div><div class="v">завтрак по желанию, ¥1 000 за ночь</div></div>
+      <div class="row"><div class="k">Заезд</div><div class="v mono">15:00 — 00:00</div></div>
+      <div class="row"><div class="k">Выезд</div><div class="v mono">до 11:00</div></div>
+      <div class="row"><div class="k">Адрес</div><div class="v">1-15-5 Hanakawado, Taito-ku, Tokyo<br>
+        <span class="mono" style="color:var(--mute)">+81 3-5830-3754</span></div></div>
+      <div class="row"><div class="k">Отмена</div><div class="v">бесплатно до 23 декабря<br>
+        <span style="color:var(--mute)">предоплата внесена, остаток спишется</span></div></div>
+    </div>
+    <div class="flag">Оплачен с 14 января, заезжаешь 15-го: ночь с 14 на 15 ты в Киносаки. Так и задумано.</div>
+  </div></div></div><div class="foot"><div class="total">
+  <div class="lbl">Ночёвки · все пять броней</div>
+  <div class="sum"><div class="usd">$1 876</div>
+    <div class="jpy">¥297 912</div></div>
+  <div class="rate">$1 = ¥158.88 · курс на 23 августа 2026 · платишь в иенах</div>
+</div><div style="flex:1"></div><div class="unknown"><div class="cap">Ещё не&nbsp;посчитано</div><div class="slots"><div class="blank"><div class="slot"></div><div class="nm">Перелёт</div><div class="nt">туда и обратно</div></div><div class="blank"><div class="slot"></div><div class="nm">Поезда</div><div class="nt">четыре переезда</div></div><div class="blank"><div class="slot"></div><div class="nm">Еда, входы, онсэны</div><div class="nt">на месте</div></div></div></div></div></body></html>

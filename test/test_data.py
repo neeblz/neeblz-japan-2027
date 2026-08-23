@@ -262,8 +262,76 @@ class PageShowsIt(unittest.TestCase):
         self.assertEqual(rows[-1], "19")
 
     def test_the_night_in_the_air_is_shown_not_hidden(self):
-        self.assertIn("ночь в самолёте", self.html)
-        self.assertIn('<li class="transit">', self.html)
+        """Ночь 4-го стоит в нитке отрезком, а не выпадает из поездки."""
+        self.assertIn('class="bar air"', self.html)
+        self.assertIn("в самолёте", self.html)
+        self.assertIn("вылет", self.html)
+
+    def test_the_thread_is_one_segment_per_city(self):
+        """Нитка: четыре города плюс ночь в воздухе, ширина — это ночи.
+
+        Ширина отрезка задана столбцами сетки, а не пикселями, поэтому её
+        видно прямо в разметке: Киото занимает четыре столбца, Киносаки два.
+        """
+        bars = re.findall(r'<div class="bar"[^>]*grid-column:(\d+)/span (\d+)', self.html)
+        self.assertEqual(len(bars), 4, "по отрезку на город")
+        self.assertEqual([span for _start, span in bars], ["4", "4", "2", "4"])
+        # Асакуса начинается с 15-го (12-я ночь поездки), а не с оплаченного 14-го
+        self.assertEqual(bars[-1][0], "12")
+
+    def test_kinosaki_is_one_card_but_two_deadlines(self):
+        """Две брони подряд — один город, но сроки отмены у них разные.
+
+        Слить их в одну строку значило бы показать один срок вместо двух и
+        подарить ей лишний день на раздумья по первой ночи.
+        """
+        self.assertEqual(self.html.count('class="city"'), 4, "карточек городов четыре")
+        for stay_id in ("morizuya-1", "morizuya-2"):
+            self.assertIn(f'id="{stay_id}"', self.html)
+        self.assertIn("2027-01-10T23:59", self.html)
+        self.assertIn("2027-01-11T23:59", self.html)
+        self.assertIn("2 брони по", self.html)
+
+    def test_wishlist_places_are_marked_as_wishes(self):
+        """Места из вишлиста — желания, а не брони, и это должно быть видно."""
+        for place in REAL["places"]:
+            self.assertIn(place["title"], self.html)
+        self.assertIn("не бронь", self.html)
+        self.assertEqual(self.html.count("хочу сходить"), len(REAL["stays"]) - 1,
+                         "подпись стоит у каждого города, включая пустой")
+        # и ни одно из них не попало в деньги
+        wishes = re.search(r'class="wishes"(.*?)</div>', self.html, re.S)
+        self.assertIsNotNone(wishes)
+        self.assertNotIn("¥", wishes.group(1))
+
+    def test_a_place_hung_on_a_missing_booking_is_caught(self):
+        """Опечатка в «stay» — это место, которое молча не покажется."""
+        data = broken()
+        data["places"][0]["stay"] = "omo7"
+        with self.assertRaises(Failed) as it:
+            check(data)
+        self.assertIn("а такой нет", str(it.exception))
+
+    def test_the_dollar_total_is_the_sum_of_the_shown_dollars(self):
+        """Столбик долларов на экране обязан сойтись с итогом под ним.
+
+        Из общей иены вышло бы $1 875, из четырёх показанных чисел — $1 876.
+        Расхождение в доллар — цена округления; в иенах всё точно.
+        """
+        shown = [int(re.sub(r"\s", "", x))
+                 for x in re.findall(r'<b class="usd">\$([\d\s]+)</b>', self.html)]
+        # четыре города, отменённая бронь и итог — именно в этом порядке
+        self.assertEqual(len(shown), 6, shown)
+        self.assertEqual(shown[-1], sum(shown[:4]), "итог = столбик городов")
+        self.assertNotEqual(shown[-1], round(297_912 / 158.88),
+                            "итог считается из показанного, а не из общей иены")
+
+    def test_nothing_is_lost_from_the_long_page(self):
+        """Короче — не значит меньше: списки, дни и багаж просто свёрнуты."""
+        for kept in ("Решить и забронировать", "По дням", "Багаж",
+                     "Осака — однодневная вылазка", "Yamato TA-Q-BIN"):
+            self.assertIn(kept, self.html, kept)
+        self.assertEqual(self.html.count('<details class="more">'), 3)
 
     def test_page_is_mobile_first(self):
         self.assertIn("width=device-width", self.html)
