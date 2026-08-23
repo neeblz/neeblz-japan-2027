@@ -1,0 +1,6 @@
+{
+  "name": "japan-2027",
+  "private": true,
+  "type": "module",
+  "scripts": { "test": "node --test test/*.test.mjs" }
+}
