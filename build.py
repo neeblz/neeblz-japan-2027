@@ -260,13 +260,17 @@ def check(trip: dict) -> list[str]:
 # Цвет — единственное, что здесь не из данных: индиго Гиндзы, хурма Киото,
 # сосна Киносаки, глициния Асакусы. Новый город получит цвет из запаса, а не
 # исчезнет с картинки.
+#
+# На каждом из них лежит белый текст — название города в шапке карточки и
+# «4 ночи» в нитке, — поэтому тон подобран не на глаз: белое на нём держит
+# 7:1. Хурма и сосна ради этого стали темнее прежнего (было 5.2 и 6.1).
 TONES = {
-    ("Токио", "Гиндза"): "#2F4B7C",
-    ("Киото", "Сандзё"): "#B0512A",
-    ("Киносаки", "онсэн"): "#3A6B57",
-    ("Токио", "Асакуса"): "#6A4A7E",
+    ("Токио", "Гиндза"): "#2F4B7C",     # 8.7:1
+    ("Киото", "Сандзё"): "#904222",     # 7.0:1
+    ("Киносаки", "онсэн"): "#35614F",   # 7.1:1
+    ("Токио", "Асакуса"): "#6A4A7E",    # 7.3:1
 }
-SPARE = ["#2F4B7C", "#B0512A", "#3A6B57", "#6A4A7E", "#8A6A3B"]
+SPARE = ["#2F4B7C", "#904222", "#35614F", "#6A4A7E", "#6E5326"]
 
 
 def legs(stays: list) -> list:
@@ -410,9 +414,13 @@ def thread(trip: dict, all_legs: list) -> str:
         if leg["paid_from"] >= leg["sleep_from"]:
             continue
         why = leg["stays"][-1].get("arriving", {}).get("why", "")
+        # Цвет тона идёт в `color`, а не в `background`: полоса рисуется косой
+        # штриховкой по currentColor и обведена рамкой. Так «оплачено, но не
+        # прожито» отличается от прожитого фактурой, а не оттенком — на плохом
+        # экране оттенок первым и пропадает.
         paid.append(
             f'<div class="paidbar" style="{col(leg["paid_from"], leg["paid_nights"])};'
-            f'background:{leg["tone"]}"><span>оплачено с {day_month(leg["paid_from"].isoformat())}'
+            f'color:{leg["tone"]}"><span>оплачено с {day_month(leg["paid_from"].isoformat())}'
             f'{f" · {e(why)}" if why else ""}</span></div>'
         )
 
@@ -514,6 +522,39 @@ def places_block(leg: dict, places: list) -> str:
     return f'<div class="wishes">{head}<ul>{shown}</ul>{more}</div>'
 
 
+def stay_fine(leg: dict, extras: str, notes: str) -> str:
+    """Подробности проживания — под стрелкой, одной штукой на карточку.
+
+    Её слово 2026-08-23: «а подробности о проживании давайте сворачивать под
+    стрелку». Снаружи остаётся то, что решает и стоит денег: город, даты, цена
+    и срок бесплатной отмены. Комната, еда, часы, адрес и телефон — внутри.
+
+    Прежние «ещё про отель» слиты сюда же: две стрелки подряд в одной карточке
+    — это не выбор, а лишнее нажатие, и вторая всё равно про то же самое.
+
+    Заголовок перечисляет, что внутри. Свёрнутое без подписи — это вопрос
+    «а надо ли туда лезть», который приходится решать нажатием.
+    """
+    hint = "комната · еда · часы · адрес"
+    if extras:
+        hint += " · доплаты"
+    return f"""
+<details class="stayfine">
+  <summary><span class="lbl">подробности проживания</span><span class="hint">{hint}</span></summary>
+  <dl class="rows">
+    <div><dt>комната</dt><dd>{e(leg["room"])}</dd></div>
+    <div><dt>еда</dt><dd>{e(leg["meals"])}</dd></div>
+    <div><dt>заезд</dt><dd class="num">{e(leg["checkin"])}</dd></div>
+    <div><dt>выезд</dt><dd class="num">{e(leg["checkout"])}</dd></div>
+    <div><dt>адрес</dt><dd>
+      <a class="btn" href="{e(maplink(leg["address"]))}" target="_blank" rel="noreferrer noopener">{e(leg["address"])}</a>
+      <a class="btn tel" href="{e(tellink(leg["phone"]))}">{e(leg["phone"])}</a></dd></div>
+  </dl>
+  {f'<ul class="extras">{extras}</ul>' if extras else ''}
+  {f'<ul class="fine">{notes}</ul>' if notes else ''}
+</details>"""
+
+
 def city_cards(all_legs: list, alerts: list, places: list, cancelled: list) -> str:
     """Карточка на город: всё, что превращается в деньги и в опоздания."""
     flagged = {a["id"]: a["level"] for a in alerts}
@@ -552,7 +593,7 @@ def city_cards(all_legs: list, alerts: list, places: list, cancelled: list) -> s
         else:
             how = '<span class="onsite">оплата на месте</span>'
         if many:
-            how += (f'<span class="onsite">{len(leg["stays"])} брони по '
+            how += (f'<span class="plain">{len(leg["stays"])} брони по '
                     f'{yen(leg["stays"][0]["total_jpy"])}</span>')
 
         # Налог на источники записан в обеих ночёвках Киносаки — в карточке
@@ -560,8 +601,6 @@ def city_cards(all_legs: list, alerts: list, places: list, cancelled: list) -> s
         extras = "".join(f"<li>{e(x)}</li>" for x in dict.fromkeys(
             x for s in leg["stays"] for x in s.get("extras", [])))
         notes = "".join(f"<li>{e(x)}</li>" for s in leg["stays"] for x in s.get("notes", []))
-        fine = (f'<details class="fine"><summary>ещё про отель</summary>'
-                f'<ul>{notes}</ul></details>') if notes else ""
 
         cards.append(f"""
 <article class="city">
@@ -575,19 +614,8 @@ def city_cards(all_legs: list, alerts: list, places: list, cancelled: list) -> s
        <span>{leg["nights"]} {plural(leg["nights"], "ночь", "ночи", "ночей")}</span></p>
     <p class="price">{money(leg["jpy"])}<span class="how">{how}</span></p>
 
-    <dl class="rows">
-      <div><dt>комната</dt><dd>{e(leg["room"])}</dd></div>
-      <div><dt>еда</dt><dd>{e(leg["meals"])}</dd></div>
-      <div><dt>заезд</dt><dd class="num">{e(leg["checkin"])}</dd></div>
-      <div><dt>выезд</dt><dd class="num">{e(leg["checkout"])}</dd></div>
-      <div><dt>адрес</dt><dd>
-        <a class="btn" href="{e(maplink(leg["address"]))}" target="_blank" rel="noreferrer noopener">{e(leg["address"])}</a>
-        <a class="btn tel" href="{e(tellink(leg["phone"]))}">{e(leg["phone"])}</a></dd></div>
-    </dl>
-
     {"".join(brons)}
-    {f'<ul class="extras">{extras}</ul>' if extras else ''}
-    {fine}
+    {stay_fine(leg, extras, notes)}
     {places_block(leg, places)}
   </div>
 </article>""")
@@ -776,21 +804,39 @@ def colophon(trip: dict) -> str:
 # ─────────────────────────────────────────── стиль
 
 CSS = """
+/* Страница всегда светлая — её слово 2026-08-23: «а сделайте на светлом фоне,
+   а то сложно читать». Тёмная тема тут не отключена «на всякий случай»: она
+   включалась сама, по настройке телефона, и именно её Ни и увидела. Поэтому
+   `color-scheme:light` стоит рядом — без него светлыми останутся только наши
+   цвета, а поля ввода и полоса прокрутки браузер всё равно нарисует тёмными.
+
+   Каждый цвет ниже подписан контрастом к бумаге (#f2eee7), потому что «сложно
+   читать» — это измеримая величина, а не вкус. Основной текст держит 7:1,
+   подписи и мелочь — 4.5:1; проверяется в test/wide.py на каждой видимой
+   строке, а не глазами по памяти. */
 :root{
-  --paper:#f2eee7; --card:#fcfaf6; --ink:#1e1b18; --quiet:#8b8275; --deep:#5f574a;
-  --rule:#ded5c6; --hair:#ebe4d8; --gold:#a8834b; --moss:#4e6b4a; --fire:#b23a29;
-  --sand:#f6f0e4;
+  color-scheme:light;
+  --paper:#f2eee7; --card:#fcfaf6; --sand:#f6f0e4;
+  --ink:#1e1b18;            /* 14.8:1 — всё, что читается как текст */
+  --deep:#564e43;           /*  7.1:1 — второй голос, но всё ещё текст */
+  --quiet:#645d54;          /*  5.6:1 — подписи, мелочь, пояснения */
+  --gold:#7c6138;           /*  5.0:1 — акцент и мелкие заголовки */
+  --bronze:#5f4a2a;         /*  7.3:1 — тот же акцент там, где он от 14px и текст */
+  --moss:#4a6546;           /*  5.6:1 — уже списано */
+  --fire:#a83727;           /*  5.6:1 — спишется само, просроченное */
+  --rule:#8f8677;           /*  3.1:1 — границы, которые что-то значат */
+  --hair:#cec5b3;           /*  1.5:1 — разделители строк, чистое оформление */
   --serif:"Iowan Old Style","Palatino Linotype",Palatino,Georgia,"Times New Roman",serif;
   --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
   --num:ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;
   --sheet:1340px;
-}
-@media (prefers-color-scheme:dark){
-  :root{
-    --paper:#14181c; --card:#1b2026; --ink:#e8e4dc; --quiet:#9aa3ad; --deep:#c3bcb0;
-    --rule:rgba(232,228,220,.17); --hair:rgba(232,228,220,.11); --gold:#c9a874;
-    --moss:#8fb488; --fire:#e8836f; --sand:#1e2429;
-  }
+  /* Три способа оплаты различаются не только цветом: заливка, косая штриховка
+     вправо, косая штриховка влево. Плотность у всех трёх одинаковая нарочно —
+     ставить её лесенкой значило бы рисовать самую крупную сумму самой бледной,
+     а «на месте» здесь как раз крупнейшая доля. */
+  --fill-paid:var(--moss);
+  --fill-due:repeating-linear-gradient(45deg,var(--fire) 0 2px,rgba(255,255,255,.75) 2px 4.5px);
+  --fill-onsite:repeating-linear-gradient(-45deg,var(--gold) 0 2px,rgba(255,255,255,.75) 2px 4.5px);
 }
 *{box-sizing:border-box}
 html{-webkit-text-size-adjust:100%}
@@ -835,8 +881,8 @@ code{font-size:.88em; background:var(--sand); padding:1px 5px; border-radius:4px
   align-items:flex-end; padding:0 12px 9px; color:#fff; overflow:hidden}
 .thread .bar .n{font-size:12.5px; font-weight:600; letter-spacing:.01em}
 .thread .bar .who{display:none}
-.thread .bar .edge{position:absolute; top:9px; font-family:var(--num); font-size:9.5px;
-  color:rgba(255,255,255,.72); white-space:nowrap}
+.thread .bar .edge{position:absolute; top:9px; font-family:var(--num); font-size:10.5px;
+  color:rgba(255,255,255,.9); white-space:nowrap}
 .thread .bar .edge.i{left:12px}
 .thread .bar .edge.o{right:12px}
 .thread .bar.air{background:transparent; border:1px dashed var(--rule); color:var(--quiet);
@@ -847,10 +893,14 @@ code{font-size:.88em; background:var(--sand); padding:1px 5px; border-radius:4px
 .thread .home b{font-family:var(--serif); font-size:20px; line-height:1}
 .thread .home span{font-size:9.5px; letter-spacing:.14em; text-transform:uppercase;
   color:var(--quiet); margin-top:4px}
-.thread .paidrow{margin-top:4px; height:14px}
-.thread .paidbar{height:7px; border-radius:2px; opacity:.42; position:relative}
-.thread .paidbar span{position:absolute; left:0; top:10px; white-space:nowrap;
-  font-size:10px; color:var(--quiet)}
+.thread .paidrow{margin-top:4px; height:15px}
+/* Оплачено сверх прожитого: обводка и штриховка, а не тот же цвет побледнее.
+   Бледный оттенок — единственное, что не переживает плохой экран. */
+.thread .paidbar{height:9px; border-radius:2px; position:relative;
+  border:1px solid currentColor;
+  background:repeating-linear-gradient(45deg,currentColor 0 2px,transparent 2px 5px)}
+.thread .paidbar span{position:absolute; left:0; top:11px; white-space:nowrap;
+  font-size:10.5px; color:var(--quiet)}
 .thread .dates{margin-top:14px; border-top:1px solid var(--rule)}
 .thread .day{text-align:center; padding-top:8px; position:relative}
 .thread .day::before{content:""; position:absolute; left:50%; top:0; width:1px; height:4px;
@@ -902,22 +952,49 @@ code{font-size:.88em; background:var(--sand); padding:1px 5px; border-radius:4px
 .city .price{margin:9px 0 0; display:flex; flex-wrap:wrap; align-items:baseline; gap:0 9px}
 .city .usd{font-family:var(--serif); font-size:27px; line-height:1; letter-spacing:-.01em}
 .city .jpy{font-family:var(--num); font-size:11px; color:var(--quiet)}
-.city .how{display:block; width:100%; font-size:10.5px; margin-top:5px}
-.city .how span{margin-right:9px}
-.city .paid{color:var(--moss)} .city .due{color:var(--fire)} .city .onsite{color:var(--quiet)}
-.rows{margin:12px 0 0; border-top:1px solid var(--hair)}
+/* Как платится — тремя способами сразу: словом, цветом и наполненностью
+   квадратика. Штриховка на восьми пикселях превращается в штрих-код, поэтому
+   здесь то же различие сказано наполненностью: полный → половина → пустой.
+   Внизу, где места больше, ту же тройку разводит фактура полосы. */
+.city .how{display:block; width:100%; font-size:11px; margin-top:6px}
+.city .how span{margin-right:12px; padding-left:16px; position:relative}
+.city .how span::before{content:""; position:absolute; left:0; top:3px; width:9px; height:9px;
+  border-radius:2px; border:1.5px solid currentColor}
+.city .paid::before{background:currentColor}
+.city .due::before{box-shadow:inset 0 -3px 0 currentColor}
+.city .paid{color:var(--moss)} .city .due{color:var(--fire)} .city .onsite{color:var(--gold)}
+.city .plain{color:var(--quiet); padding-left:0}
+.city .plain::before{display:none}
+
+/* ── подробности проживания: одна стрелка на карточку */
+.stayfine{margin-top:12px; border-top:1px solid var(--hair)}
+.stayfine > summary{cursor:pointer; list-style:none; display:grid;
+  grid-template-columns:13px 1fr; gap:1px 6px; align-items:start;
+  padding:9px 0 8px; min-height:36px}
+.stayfine > summary::-webkit-details-marker{display:none}
+.stayfine > summary::before{content:""; grid-row:1; align-self:start; margin-top:4px;
+  width:0; height:0; border-left:6px solid var(--gold);
+  border-top:4.5px solid transparent; border-bottom:4.5px solid transparent}
+.stayfine[open] > summary::before{border-left:4.5px solid transparent;
+  border-right:4.5px solid transparent; border-top:6px solid var(--gold); border-bottom:0;
+  margin-top:6px}
+.stayfine .lbl{grid-column:2; font-size:12px; color:var(--deep); font-weight:600}
+.stayfine .hint{grid-column:2; font-size:10.5px; color:var(--quiet); line-height:1.3}
+.rows{margin:2px 0 0; border-top:1px solid var(--hair)}
 .rows > div{display:flex; gap:10px; padding:6px 0; border-bottom:1px solid var(--hair)}
-.rows dt{flex:none; width:60px; font-size:9.5px; letter-spacing:.1em; text-transform:uppercase;
+.rows dt{flex:none; width:58px; font-size:9.5px; letter-spacing:.1em; text-transform:uppercase;
   color:var(--quiet); padding-top:2px}
-.rows dd{margin:0; font-size:11.5px; line-height:1.35}
+.rows dd{margin:0; font-size:12px; line-height:1.35}
 .rows dd.num{font-family:var(--num)}
 .btn{display:block; min-height:20px; text-decoration:none; color:var(--ink);
   border-bottom:1px dotted var(--rule); padding:1px 0}
 .btn.tel{font-family:var(--num); color:var(--quiet); border:0}
+/* Помеченная бронь отличается не только цветом полоски, но и её толщиной —
+   и объясняет себя словами внутри, а не одним оттенком слева. */
 .stay{margin-top:11px; padding:9px 11px; border-radius:8px; background:var(--sand);
-  border-left:2px solid var(--rule)}
-.stay.noted{border-left-color:var(--gold)}
-.stay.clash{border-left-color:var(--fire)}
+  border-left:2px solid var(--hair)}
+.stay.noted{border-left:4px solid var(--gold)}
+.stay.clash{border-left:4px solid var(--fire)}
 .stay .blabel{margin:0 0 4px; font-size:10.5px; color:var(--quiet); font-style:italic}
 .stay .arriving{margin:0 0 7px; font-size:11.5px}
 .stay .arriving b{display:block; font-size:12.5px}
@@ -926,15 +1003,13 @@ code{font-size:.88em; background:var(--sand); padding:1px 5px; border-radius:4px
 .cancel .k{display:block; font-size:9.5px; letter-spacing:.11em; text-transform:uppercase;
   color:var(--quiet)}
 .cancel b{display:block; font-size:11.5px; margin-top:1px}
-.cancel .t{display:block; color:var(--quiet); font-size:10.5px}
-.cancel .left{margin-top:2px; font-size:10.5px; font-weight:600; color:var(--gold)}
+.cancel .t{display:block; color:var(--quiet); font-size:11px}
+.cancel .left{margin-top:2px; font-size:11px; font-weight:600; color:var(--gold)}
 .cancel.soon .left{color:var(--fire)}
-.extras{list-style:none; margin:9px 0 0; padding:0; font-size:10.5px; color:var(--quiet)}
-.extras li{padding-left:11px; position:relative}
+.extras{list-style:none; margin:9px 0 0; padding:0; font-size:11px; color:var(--quiet)}
+.extras li{padding:1px 0 1px 11px; position:relative; line-height:1.4}
 .extras li::before{content:"+"; position:absolute; left:0; color:var(--gold)}
-.fine{margin-top:8px; font-size:10.5px; color:var(--quiet)}
-.fine summary{cursor:pointer; color:var(--deep)}
-.fine ul{list-style:none; margin:6px 0 0; padding:0}
+.fine{list-style:none; margin:8px 0 0; padding:0; font-size:11px; color:var(--quiet)}
 .fine li{padding:2px 0 2px 11px; position:relative; line-height:1.4}
 .fine li::before{content:"·"; position:absolute; left:3px}
 
@@ -950,11 +1025,11 @@ code{font-size:.88em; background:var(--sand); padding:1px 5px; border-radius:4px
   color:var(--gold)}
 .wishes b{font-size:12px; font-weight:600}
 .wishes .where{font-size:10px; color:var(--quiet); margin-left:5px}
-.wishes .what{display:block; font-size:10.5px; color:var(--quiet); line-height:1.35}
-.wishes .none{margin:0; font-size:10.5px; color:var(--quiet); line-height:1.35;
+.wishes .what{display:block; font-size:11px; color:var(--quiet); line-height:1.35}
+.wishes .none{margin:0; font-size:11px; color:var(--quiet); line-height:1.35;
   border:1px dashed var(--rule); border-radius:5px; padding:6px 8px}
 .wish-more{margin-top:4px}
-.wish-more summary{cursor:pointer; font-size:10.5px; color:var(--deep)}
+.wish-more summary{cursor:pointer; font-size:11px; color:var(--deep)}
 .cancelled{list-style:none; margin:12px 0 0; padding:0; font-size:11.5px; color:var(--quiet)}
 .cancelled li{display:flex; flex-wrap:wrap; gap:0 8px; align-items:baseline}
 .cancelled b{text-decoration:line-through; font-weight:600}
@@ -969,22 +1044,30 @@ code{font-size:.88em; background:var(--sand); padding:1px 5px; border-radius:4px
 .total{flex:1 1 340px; max-width:430px}
 .total .sum{margin:6px 0 0; display:flex; align-items:baseline; gap:11px}
 .total .usd{font-size:38px; line-height:1; letter-spacing:-.02em}
-.total .jpy{font-family:var(--num); font-size:14px; color:var(--quiet)}
+.total .jpy{font-family:var(--num); font-size:14px; color:var(--deep)}
 .total .fx{margin:6px 0 0; font-size:10.5px; color:var(--quiet); line-height:1.5}
-.bar{display:flex; height:7px; border-radius:99px; overflow:hidden; margin:12px 0 10px;
+/* Три доли оплаты различаются заливкой, штриховкой и полосками — не только
+   цветом. Тонкий просвет между кусками показывает границу даже там, где два
+   соседних оттенка на плохом экране сливаются. */
+.bar{display:flex; height:9px; border-radius:99px; overflow:hidden; margin:12px 0 10px;
   background:var(--hair)}
-.seg.paid{background:var(--moss)} .seg.due{background:var(--fire)} .seg.onsite{background:var(--gold)}
+.seg.paid{background:var(--fill-paid)}
+.seg.due{background:var(--fill-due)}
+.seg.onsite{background:var(--fill-onsite)}
+.seg + .seg{border-left:1.5px solid var(--card)}
 .legend{list-style:none; margin:0; padding:0; display:flex; flex-wrap:wrap; gap:4px 18px;
-  font-size:11px}
-.legend li{padding-left:13px; position:relative; color:var(--quiet)}
-.legend li::before{content:""; position:absolute; left:0; top:5px; width:8px; height:8px;
-  border-radius:2px}
-.legend .paid::before{background:var(--moss)}
-.legend .due::before{background:var(--fire)}
-.legend .onsite::before{background:var(--gold)}
+  font-size:11.5px}
+.legend li{padding-left:15px; position:relative; color:var(--quiet)}
+.legend li::before{content:""; position:absolute; left:0; top:4px; width:9px; height:9px;
+  border-radius:2px; border:1.5px solid currentColor}
+.legend .paid{color:var(--moss)} .legend .due{color:var(--fire)} .legend .onsite{color:var(--gold)}
+.legend .paid::before{background:currentColor}
+.legend .due::before{box-shadow:inset 0 -3px 0 currentColor}
+.legend b,.legend span{color:var(--quiet)}
+.legend b{color:var(--ink)}
 .legend b{font-family:var(--num); color:var(--ink); margin-right:5px}
 .beyond{flex:1 1 250px; max-width:330px}
-.caveats{list-style:none; margin:8px 0 0; padding:0; font-size:11px; color:var(--quiet)}
+.caveats{list-style:none; margin:8px 0 0; padding:0; font-size:11.5px; color:var(--quiet)}
 .caveats li{padding:2px 0 2px 12px; position:relative; line-height:1.45}
 .caveats li::before{content:"+"; position:absolute; left:0; color:var(--gold)}
 .unknown{margin-left:auto}
@@ -1008,7 +1091,7 @@ code{font-size:.88em; background:var(--sand); padding:1px 5px; border-radius:4px
 .sec-note{font-size:12px; color:var(--quiet); margin:0 0 14px}
 .todo-cols{display:grid; gap:0 30px}
 .todo-group{margin:0 0 16px}
-.todo-group h3{font-size:14px; margin-bottom:5px; color:var(--gold)}
+.todo-group h3{font-size:14px; margin-bottom:5px; color:var(--bronze)}
 .todo-group ul{list-style:none; margin:0; padding:0}
 .todo-group li{border-bottom:1px solid var(--hair)}
 .todo-group label{display:flex; gap:11px; align-items:flex-start; padding:10px 2px; cursor:pointer}
@@ -1020,7 +1103,7 @@ input:checked + .tick::after{content:""; position:absolute; left:6px; top:2px; w
   height:10px; border:solid #fff; border-width:0 2px 2px 0; transform:rotate(42deg)}
 input:focus-visible + .tick{outline:2px solid var(--gold); outline-offset:2px}
 .txt{font-size:14px}
-input:checked ~ .txt{color:var(--quiet); text-decoration:line-through}
+input:checked ~ .txt{color:var(--deep); text-decoration:line-through}
 .txt em{display:block; font-size:12px; color:var(--quiet); font-style:normal; text-decoration:none}
 .reset{margin-top:6px; background:none; border:1px solid var(--rule); border-radius:8px;
   padding:10px 14px; font-size:12.5px; color:var(--quiet); font-family:inherit; cursor:pointer}
@@ -1036,7 +1119,10 @@ input:checked ~ .txt{color:var(--quiet); text-decoration:line-through}
 .days .body li{display:block; border:0; padding:1px 0 1px 12px; font-size:12px;
   color:var(--quiet); position:relative}
 .days .body li::before{content:"·"; position:absolute; left:3px}
-.days .empty{margin:2px 0 0; font-size:11.5px; color:var(--quiet); opacity:.6}
+/* Прозрачность съедает контраст молча: 5.6:1 при opacity .6 превращается в
+   2.9:1, и меряется уже не то, что записано в переменной. Поэтому «свободно»
+   приглушено курсивом, а не прозрачностью. */
+.days .empty{margin:2px 0 0; font-size:11.5px; color:var(--quiet); font-style:italic}
 .days .move .date b{color:var(--gold)}
 .days .clash .date b{color:var(--fire)}
 .moves{list-style:none; margin:0 0 14px; padding:0; display:grid; gap:10px}
@@ -1046,7 +1132,7 @@ input:checked ~ .txt{color:var(--quiet); text-decoration:line-through}
   color:var(--gold)}
 #luggage .path{margin:5px 0 0; font-size:14.5px; font-family:var(--serif); display:flex;
   gap:8px; flex-wrap:wrap; align-items:baseline}
-#luggage .path i{color:var(--gold); font-style:normal}
+#luggage .path i{color:var(--bronze); font-style:normal}
 #luggage .how{margin:4px 0 0; font-size:12.5px; font-weight:600}
 #luggage .note{margin:1px 0 0; font-size:11.5px; color:var(--quiet)}
 #luggage .lead{margin:0 0 12px; font-size:14px}
@@ -1079,21 +1165,22 @@ input:checked ~ .txt{color:var(--quiet); text-decoration:line-through}
   .thread .bar{height:auto; padding:10px 13px; margin-bottom:5px; align-items:baseline;
     flex-wrap:wrap; gap:2px 10px}
   .thread .bar .who{display:block; order:-2; flex:1 1 100%; font-size:13.5px; font-weight:600}
-  .thread .bar .edge{position:static; color:rgba(255,255,255,.72); font-size:10.5px}
+  .thread .bar .edge{position:static; color:rgba(255,255,255,.9); font-size:11px}
   .thread .bar .edge.o{display:none}
   .thread .bar .n{order:-1; flex:none}
   .thread .home{flex-direction:row; align-items:baseline; gap:8px; height:auto;
     border-left:0; padding:6px 0 0}
   .thread .dates,.thread .moves{display:none}
   .thread .paidrow{height:auto}
-  .thread .paidbar{height:auto; opacity:1; background:none !important; margin-top:4px}
+  .thread .paidbar{height:auto; background:none; border:0; margin-top:4px}
   .thread .paidbar span{position:static; white-space:normal; display:block}
   .alert{display:block}
   .alert .facts{display:block; margin-top:8px}
   .unknown{margin-left:0}
   .blank{flex:1 1 100px; width:auto}
   /* Пальцем попадать: карта, телефон и все свёртки — не мельче 36px. */
-  .btn,.fine summary,.wish-more summary{min-height:36px; display:flex; align-items:center}
+  .btn,.wish-more summary{min-height:36px; display:flex; align-items:center}
+  .stayfine > summary{min-height:44px; align-content:center}
   .rows dd{font-size:12.5px}
   .city .inner,.city .cap{padding-left:16px; padding-right:16px}
 }
@@ -1185,8 +1272,7 @@ def render(trip: dict) -> str:
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="robots" content="noindex, nofollow, noarchive">
-<meta name="theme-color" content="#f2eee7" media="(prefers-color-scheme: light)">
-<meta name="theme-color" content="#14181c" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#f2eee7">
 <title>{e(t["title"])} {e(t["year"])} — {e(t["subtitle"])}</title>
 <style>{CSS}</style>
 </head>
@@ -1209,9 +1295,10 @@ def render(trip: dict) -> str:
 NOT_FOUND = """<!doctype html><html lang="ru"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex, nofollow"><title>Не туда</title>
-<style>body{margin:0;height:100vh;display:grid;place-items:center;background:#f7f3ec;
-color:#1e2329;font:16px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;text-align:center}
-a{color:#2f4a5c}@media(prefers-color-scheme:dark){body{background:#14181c;color:#e8e4dc}a{color:#8fb6cc}}
+<style>:root{color-scheme:light}
+body{margin:0;height:100vh;display:grid;place-items:center;background:#f7f3ec;
+color:#1e1b18;font:16px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;text-align:center}
+a{color:#2f4b7c}
 </style></head><body><div><p style="font-size:44px;margin:0;font-family:Georgia,serif">迷</p>
 <p>Такой страницы здесь нет.</p><p><a href="/">На главную</a></p></div></body></html>
 """
