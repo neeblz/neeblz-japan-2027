@@ -1,6 +1,6 @@
 /* Дверь проверяется здесь, без выкладки.
  *
- *     node --test test/
+ *     npm test          # node --test test/*.test.mjs
  *
  * Правило, из-за которого этот файл существует: замок, который ни разу не
  * отказывал в тесте, и замок, которого нет, снаружи выглядят одинаково.
@@ -179,4 +179,38 @@ test("чужой next не доезжает до Location даже при вер
     ENV
   );
   assert.equal(verdict.response.headers.get("location"), "/");
+});
+
+// ── новые ручки закрыты той же дверью ──────────────────────────────────
+//
+// Ручка, которой Ни вносит записи, живёт по адресу `/api/entries`. Своего
+// замка у неё нет нарочно: второй замок на той же двери — это второе место,
+// где его можно забыть запереть. Значит проверять надо, что дверь стоит и
+// перед ней тоже, и что за 401 не видно ни строки её записей.
+
+test("ручка записей без печенья не отвечает ничем, кроме входа", async () => {
+  for (const method of ["GET", "POST", "PATCH", "DELETE"]) {
+    const request = new Request(HOST + "/api/entries", {
+      method,
+      ...(method === "GET" ? {} : { body: "{}", headers: { "content-type": "application/json" } }),
+    });
+    const verdict = await answer(request, ENV);
+    assert.equal(verdict.pass, false, method);
+    assert.equal(verdict.response.status, 401, method);
+    const body = await verdict.response.text();
+    /* Слово «entries» в теле есть законно — это адрес, куда её вернут после
+       пароля. Не должно быть **ответа ручки**: ни списка, ни галочек. */
+    assert.doesNotMatch(body, /"ok"|"rev"|"ticks"/, `${method}: за 401 виден ответ ручки`);
+  }
+});
+
+test("с печеньем дверь пропускает ручку записей дальше, к самой ручке", async () => {
+  const verdict = await answer(get("/api/entries", { cookie: await cookieFor() }), ENV);
+  assert.equal(verdict.pass, true, "дверь не должна отвечать за ручку — она её пропускает");
+  assert.match(verdict.headers["cache-control"], /no-store/, "её записи не кэшируются");
+});
+
+test("без пароля в окружении ручка записей закрыта так же, как страница", async () => {
+  const verdict = await answer(get("/api/entries"), {});
+  assert.equal(verdict.response.status, 503);
 });

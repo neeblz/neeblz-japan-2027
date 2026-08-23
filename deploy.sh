@@ -26,6 +26,12 @@ set -euo pipefail
 
 cd "$(dirname "$0")"
 
+# Только репетиция, без выкладки: ./deploy.sh --rehearse
+# Дверь и ручка проверяются на localhost той же связкой функций — это стоит
+# секунд и не трогает боевую.
+REHEARSE=""
+if [ "${1:-}" = "--rehearse" ]; then REHEARSE=1; shift; fi
+
 DIR=${1:-dist}
 PROJECT=japan-2027
 LIVE_BRANCH=main
@@ -126,7 +132,12 @@ topmost_wrangler() {  # pid → самый верхний предок, всё �
       *wrangler*|*workerd*|*"npm exec"*) top=$pid ;;
       *) break ;;
     esac
-    parent=$(awk '{print $4}' "/proc/$pid/stat" 2>/dev/null)
+    # Родитель — не четвёртое поле: имя процесса в /proc/pid/stat стоит в
+    # скобках и бывает с пробелами («npm exec wrangl»), и тогда $4 — это
+    # «wrangl)», а не число. Обход останавливался на полпути, порт оставался
+    # занятым осиротевшим workerd, и выкладка отказывалась стартовать на
+    # пустом месте. Читаем то, что после последней скобки: state, потом ppid.
+    parent=$(sed 's/.*) //' "/proc/$pid/stat" 2>/dev/null | awk '{print $2}')
     pid=$parent
   done
   [ -n "$top" ] || return 1
@@ -151,8 +162,11 @@ local_door() {
 
   log=$(mktemp); jar=$(mktemp)
 
+  # KV поднимается своя, на диске и во временной папке: репетиция не должна
+  # ни читать её записи, ни тем более их править.
+  local store; store=$(mktemp -d)
   (cd "$DIR" && timeout 120 npx wrangler pages dev . --port "$port" --ip 127.0.0.1 \
-      --binding "JAPAN_PASSWORD=$pw" >"$log" 2>&1) &
+      --binding "JAPAN_PASSWORD=$pw" --kv JAPAN_KV --persist-to "$store" >"$log" 2>&1) &
   local root=$!
 
   local i
@@ -187,19 +201,42 @@ local_door() {
   fi
   rm -f "$page"
 
+  # Ручка, которой Ни вносит записи, закрыта той же дверью — и это надо
+  # проверить, а не предположить: своего замка у неё нет нарочно.
+  code=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$port/api/entries")
+  [ "$code" = "401" ] && ok=$((ok + 1)) \
+    || echo "  ✗ ручка записей без печенья ответила $code вместо 401" >&2
+
+  local answer
+  answer=$(mktemp)
+  curl -s -b "$jar" -o "$answer" "http://127.0.0.1:$port/api/entries" || true
+  if grep -q '"ok":true' "$answer"; then
+    ok=$((ok + 1))
+  else
+    echo "  ✗ с паролем ручка записей не ответила списком: $(head -c 120 "$answer")" >&2
+  fi
+  rm -f "$answer"
+
   kill_tree "$root"
-  if [ "$ok" != "3" ]; then
+  rm -rf "$store"
+  if [ "$ok" != "5" ]; then
     echo "  — последние строки wrangler:" >&2
     tail -6 "$log" | sed 's/^/    /' >&2
   fi
   rm -f "$log" "$jar"
 
-  [ "$ok" = "3" ]
+  [ "$ok" = "5" ]
 }
 
 echo "— дверь на localhost"
 local_door || { echo "✗ дверь не держит ещё до выкладки — на боевую не пускаю" >&2; exit 1; }
-echo "✓ дверь на localhost: закрыта, неверный пароль отбит, верный открывает"
+echo "✓ дверь на localhost: закрыта, неверный пароль отбит, верный открывает,"
+echo "  ручка записей закрыта без печенья и отвечает списком с ним"
+
+if [ -n "$REHEARSE" ]; then
+  echo "✓ репетиция и только репетиция — на боевую не ходил"
+  exit 0
+fi
 
 echo "— боевая"
 deploy "$LIVE_BRANCH" | tail -3
@@ -216,3 +253,25 @@ echo "✓ дверь на боевой: 10 из 10, чистый адрес то
 [ "$(opens "$LIVE_HOST")" = "yes" ] \
   || { echo "✗ замок закрыт и для Ни: правильный пароль не открывает страницу" >&2; exit 1; }
 echo "✓ правильный пароль открывает — выложено: $LIVE_HOST"
+
+# Хранилище её записей — привязка `JAPAN_KV` в панели Cloudflare, и ставит её
+# человек, а не эта выкладка. Поэтому здесь не отказ, а слова: страница без
+# привязки работает и честно говорит «не сохранилось», но записывать в неё
+# нельзя, и знать об этом нужно сразу, а не от Ни.
+store_says() {
+  local host=$1 jar body pwfile out
+  jar=$(mktemp); body=$(mktemp); pwfile=$(mktemp); chmod 600 "$pwfile"
+  tr -d '\n' < "$WORKDIR/.japan-password" > "$pwfile"
+  curl -s -o /dev/null -c "$jar" -b "$jar" -X POST "$host/login" \
+       --data-urlencode "password@$pwfile" --data "next=/" >/dev/null || true
+  curl -s -b "$jar" -o "$body" "$host/api/entries" || true
+  out=$(head -c 200 "$body")
+  rm -f "$jar" "$body" "$pwfile"
+  printf '%s\n' "$out"
+}
+said=$(store_says "$LIVE_HOST")
+case "$said" in
+  *'"ok":true'*) echo "✓ хранилище на месте: записей $(printf '%s' "$said" | grep -o '"id"' | wc -l)" ;;
+  *"не настроено"*) echo "⚠ привязки JAPAN_KV на проекте нет — страница открывается, но её записи сохранить некуда" ;;
+  *) echo "⚠ ручка записей ответила непонятным: $said" ;;
+esac

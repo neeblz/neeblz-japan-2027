@@ -494,23 +494,36 @@ def alert_block(alerts: list) -> str:
 def places_block(leg: dict, places: list) -> str:
     """Куда она хочет сходить в этом городе.
 
-    Это **не** брони: ничего не оплачено, ничего не забронировано, в деньги
-    внизу они не идут. Поэтому и выглядят иначе — пунктир вместо заливки.
-    Список будет расти: первые четыре видны всегда, остальные под строкой,
-    чтобы десятое место не растянуло карточку на второй экран.
+    Два источника, один список. Записанное в `trip.json` приезжает сюда при
+    сборке; то, что Ни вписала сама прямо на странице, приезжает из хранилища
+    уже в браузере и ложится в `ul.mine` — поэтому мешок под её места стоит
+    здесь всегда, даже когда он пуст.
+
+    Разница между ними одна и она честная: у её записи может быть цена, и
+    тогда эта цена идёт в общий чек. Места из файла цены не имеют вовсе —
+    это желания, за которые ещё никто не платил.
+
+    Список будет расти: первые четыре из файла видны всегда, остальные под
+    строкой, чтобы десятое место не растянуло карточку на второй экран.
     """
     mine = [p for p in places if p["stay"] in {s["id"] for s in leg["stays"]}]
-    head = '<p class="wish-cap">хочу сходить <span>· из вишлиста, не бронь</span></p>'
-
-    if not mine:
-        return (f'<div class="wishes empty">{head}'
-                f'<p class="none">пусто — что попадёт в вишлист по этому городу, '
-                f'появится здесь</p></div>')
+    home = leg["stays"][0]["id"]
+    head = '<p class="wish-cap">хочу сходить <span>· желания, не бронь</span></p>'
+    add = (f'<button type="button" class="tiny" data-add="place" data-stay="{e(home)}">'
+           f'+ место</button>')
+    # Пустой мешок и подпись «пусто» — разные вещи: подпись прячется, как
+    # только в мешок что-то легло, а сам мешок остаётся на месте всегда.
+    tail = (f'<ul class="mine" data-mine="{e(home)}"></ul>'
+            f'<p class="none" data-none{" hidden" if mine else ""}>пока пусто — нажми '
+            f'«+ место», чтобы записать сюда своё</p>{add}')
 
     def one(p):
         where = f'<span class="where">{e(p["where"])}</span>' if p.get("where") else ""
         return (f'<li><b>{e(p["title"])}</b>{where}'
                 f'<span class="what">{e(p["what"])}</span></li>')
+
+    if not mine:
+        return f'<div class="wishes empty" data-city="{e(home)}">{head}{tail}</div>'
 
     shown = "".join(one(p) for p in mine[:4])
     rest = mine[4:]
@@ -519,7 +532,8 @@ def places_block(leg: dict, places: list) -> str:
         more = (f'<details class="wish-more"><summary>ещё {len(rest)} '
                 f'{plural(len(rest), "место", "места", "мест")}</summary>'
                 f'<ul>{"".join(one(p) for p in rest)}</ul></details>')
-    return f'<div class="wishes">{head}<ul>{shown}</ul>{more}</div>'
+    return (f'<div class="wishes" data-city="{e(home)}">{head}<ul>{shown}</ul>'
+            f'{more}{tail}</div>')
 
 
 def stay_fine(leg: dict, extras: str, notes: str) -> str:
@@ -631,6 +645,93 @@ def city_cards(all_legs: list, alerts: list, places: list, cancelled: list) -> s
     return f'<section class="cities">{"".join(cards)}</section>{gone}'
 
 
+def adder(trip: dict, all_legs: list) -> str:
+    """Три кнопки и одна форма — всё, чем Ни правит эту страницу.
+
+    Одна форма на три вида записи, а не три формы: поля у них общие на
+    четыре пятых (что это, подробность, цена, как с деньгами), и три почти
+    одинаковых бланка рядом — это выбор, который приходится делать глазами
+    каждый раз.
+
+    Форма стоит здесь, между городами и деньгами, потому что отсюда видно
+    оба берега: место уедет наверх в карточку города, бронь и пункт списка —
+    вниз, в свои разделы, и чек под ней сойдётся на глазах.
+    """
+    cities = "".join(
+        f'<option value="{e(leg["stays"][0]["id"])}">{e(leg["city"])} · {e(leg["area"])}'
+        f' — {span_dates(leg["sleep_from"], leg["paid_to"])}</option>'
+        for leg in all_legs
+    )
+    groups = "".join(
+        f'<option value="{e(g["group"])}">{e(g["group"])}</option>' for g in trip["todo"]
+    ) + '<option value="Ещё">Ещё</option>'
+
+    return f"""
+<section class="adder">
+  <div class="knobs">
+    <p class="cap">вносить своё</p>
+    <button type="button" class="knob" data-add="place">+ место</button>
+    <button type="button" class="knob" data-add="booking">+ бронь или билет</button>
+    <button type="button" class="knob" data-add="todo">+ в то-до</button>
+    <span class="storesays" data-store-says role="status"></span>
+  </div>
+  <form class="pane" data-form hidden>
+    <p class="what" data-form-what>Новое место</p>
+    <div class="f wide">
+      <label for="f-title">что это</label>
+      <input id="f-title" name="title" maxlength="120" required
+             placeholder="например: билет Токио → Киото">
+    </div>
+    <div class="f wide">
+      <label for="f-note">подробность</label>
+      <input id="f-note" name="note" maxlength="300" placeholder="необязательно">
+    </div>
+    <div class="f" data-only="place">
+      <label for="f-stay">город</label>
+      <select id="f-stay" name="stay">{cities}</select>
+    </div>
+    <div class="f" data-only="booking todo">
+      <label for="f-when">дата</label>
+      <input id="f-when" name="when" type="date" min="2026-08-01" max="2027-12-31">
+    </div>
+    <div class="f" data-only="todo">
+      <label for="f-group">раздел</label>
+      <select id="f-group" name="group">{groups}</select>
+    </div>
+    <div class="f">
+      <label for="f-amount">цена</label>
+      <span class="pair">
+        <input id="f-amount" name="amount" inputmode="decimal" placeholder="можно пусто">
+        <select name="currency" aria-label="валюта">
+          <option value="jpy">¥ иены</option>
+          <option value="usd">$ доллары</option>
+        </select>
+      </span>
+    </div>
+    <div class="f">
+      <label for="f-state">деньги</label>
+      <select id="f-state" name="state">
+        <option value="paid">уже оплачено</option>
+        <option value="upcoming">предстоит</option>
+        <option value="onsite">плачу на месте</option>
+      </select>
+    </div>
+    <div class="go">
+      <button type="submit" class="save">Сохранить</button>
+      <button type="button" class="drop" data-cancel>Отмена</button>
+      <span class="says" data-form-says role="status"></span>
+    </div>
+  </form>
+  <!-- Место, привязанное к городу, которого на странице больше нет (город
+       переименовали в trip.json, а запись осталась). Тихо пропасть оно не
+       должно — это ровно та беда, от которой в check() стоит правило №6. -->
+  <div class="orphans" data-orphans hidden>
+    <p class="cap">эти места привязаны к городу, которого на странице нет</p>
+    <ul class="mine" data-mine-orphan></ul>
+  </div>
+</section>"""
+
+
 def ledger(trip: dict, stays: list, all_legs: list) -> str:
     """Деньги и честно пустые места рядом.
 
@@ -657,23 +758,28 @@ def ledger(trip: dict, stays: list, all_legs: list) -> str:
 
     return f"""
 <section class="ledger">
-  <div class="total">
-    <p class="cap">жильё · {len(stays)} {plural(len(stays), "бронь", "брони", "броней")},
+  <div class="total" id="check">
+    <p class="cap" data-cap>жильё · {len(stays)} {plural(len(stays), "бронь", "брони", "броней")},
        {slept} {plural(slept, "ночь", "ночи", "ночей")}</p>
-    <p class="sum"><b class="usd">${f"{usd_total:,}".replace(",", THIN)}</b>
-       <span class="jpy">{yen(total)}</span></p>
+    <p class="sum"><b class="usd" data-usd>${f"{usd_total:,}".replace(",", THIN)}</b>
+       <span class="jpy" data-jpy>{yen(total)}</span></p>
     <p class="fx">$1 = ¥{FX["usd_per_jpy"]} · курс на {fx_human_date()} · платится в иенах,
        доллары округлены</p>
     <div class="bar" role="img" aria-label="как разделена оплата">
-      <span class="seg paid" style="width:{part(paid)}"></span>
-      <span class="seg due" style="width:{part(upcoming)}"></span>
-      <span class="seg onsite" style="width:{part(onsite)}"></span>
+      <span class="seg paid" data-seg="paid" style="width:{part(paid)}"></span>
+      <span class="seg due" data-seg="upcoming" style="width:{part(upcoming)}"></span>
+      <span class="seg onsite" data-seg="onsite" style="width:{part(onsite)}"></span>
     </div>
     <ul class="legend">
-      <li class="paid"><b>{yen(paid)}</b><span>уже списано</span></li>
-      <li class="due"><b>{yen(upcoming)}</b><span>спишется само</span></li>
-      <li class="onsite"><b>{yen(onsite)}</b><span>на месте, при заезде</span></li>
+      <li class="paid"><b data-money="paid">{yen(paid)}</b><span>уже списано</span></li>
+      <li class="due"><b data-money="upcoming">{yen(upcoming)}</b><span>спишется само</span></li>
+      <li class="onsite"><b data-money="onsite">{yen(onsite)}</b><span>на месте, при заезде</span></li>
     </ul>
+    <!-- Из чего сложился чек. Пока её записей нет, здесь пусто и заголовок
+         честно говорит «жильё»: подпись всегда про то число, которое рядом,
+         а не про то, каким оно станет, когда что-нибудь загрузится. -->
+    <ul class="parts" data-parts hidden></ul>
+    <p class="says" data-says role="status"></p>
   </div>
   <div class="beyond">
     <p class="cap">сверх этого — считается на месте</p>
@@ -687,12 +793,26 @@ def ledger(trip: dict, stays: list, all_legs: list) -> str:
 
 
 def checklist(trip: dict) -> str:
+    """«Что не забыть» — и единственный список, который она правит сама.
+
+    Два слоя в одном столбце. Пункты из `trip.json` собираются здесь, её
+    собственные приезжают из хранилища в браузере и ложатся в `ul.mine` того
+    же раздела. Галочка теперь тоже в хранилище, а не в памяти телефона:
+    список, который забывает отмеченное при смене устройства, — это список,
+    которому нельзя доверить визу.
+
+    Хранится по-прежнему **отличие** от файла, а не состояние: `data-built`
+    говорит, что записано в `trip.json`, и совпавшая с файлом галочка из
+    хранилища стирается. Когда решение переедет в файл, отметка не начнёт
+    спорить сама с собой.
+    """
     groups = []
     for g in trip["todo"]:
         items = "".join(
             f"""<li>
               <label>
-                <input type="checkbox" data-todo="{e(g["group"])}::{e(i["text"])}" {'checked' if i.get('done') else ''}>
+                <input type="checkbox" data-todo="{e(g["group"])}::{e(i["text"])}"
+                       data-built="{'true' if i.get('done') else 'false'}" {'checked' if i.get('done') else ''}>
                 <span class="tick" aria-hidden="true"></span>
                 <span class="txt">{e(i["text"])}
                   {f'<em>{e(i["note"])}</em>' if i.get("note") else ''}
@@ -701,13 +821,23 @@ def checklist(trip: dict) -> str:
             </li>"""
             for i in g["items"]
         )
-        groups.append(f'<div class="todo-group"><h3>{e(g["group"])}</h3><ul>{items}</ul></div>')
+        groups.append(
+            f'<div class="todo-group" data-group="{e(g["group"])}">'
+            f'<h3>{e(g["group"])}</h3><ul>{items}</ul>'
+            f'<ul class="mine" data-mine-todo="{e(g["group"])}"></ul></div>'
+        )
+    # Раздел для её пунктов, не попавших ни в один из наших: пустым не
+    # показывается, чтобы не занимать колонку обещанием.
+    groups.append('<div class="todo-group" data-group="Ещё" data-spare hidden>'
+                  '<h3>Ещё</h3><ul class="mine" data-mine-todo="Ещё"></ul></div>')
     return f"""
 <div id="todo">
-  <p class="sec-note">Галочки живут в этом телефоне. Что решено окончательно —
-     переносим в <code>trip.json</code>, чтобы не потерялось.</p>
+  <p class="sec-note">Свои пункты добавляй кнопкой «+ в то-до» — они и галочки
+     хранятся на сайте, а не в телефоне. Цена необязательна: «виза» может быть
+     просто галочкой. Что решено окончательно — переносим в
+     <code>trip.json</code>, чтобы жило рядом с бронями.</p>
   <div class="todo-cols">{"".join(groups)}</div>
-  <button class="reset" type="button" data-reset>Снять галочки на этом устройстве</button>
+  <button class="reset" type="button" data-reset>Снять все галочки</button>
 </div>"""
 
 
@@ -774,30 +904,98 @@ def luggage(trip: dict) -> str:
 </div>"""
 
 
+def bought() -> str:
+    """Купленное отдельно: билеты, поезда, экскурсии.
+
+    Пустой раздел — одна строка, а не пустая страница: место под её брони
+    существует до первой брони, иначе кнопке «+ бронь» некуда класть.
+
+    Заголовок несёт число и сумму (их подставляет браузер), потому что
+    свёрнутое без подписи превращается в вопрос «а есть ли там что-нибудь»,
+    который приходится решать нажатием.
+    """
+    return """
+<div id="bought">
+  <p class="sec-note">Всё, что куплено или будет куплено не через отель: билеты,
+     поезда, экскурсии. Идёт в общий чек — «уже оплачено» или «предстоит».</p>
+  <ul class="mine rows-list" data-mine-booking></ul>
+  <p class="none" data-none-booking>пока пусто — нажми «+ бронь или билет» выше.</p>
+</div>"""
+
+
 def more_block(trip: dict, stays: list, alerts: list) -> str:
     """Списки, дни и багаж — свёрнуты, но никуда не делись.
 
     Ни сказала про длинную версию: «слишком много листать вниз». Выкидывать
     при этом нечего — поэтому длинное лежит здесь, за одним нажатием, а не
     на главном экране.
+
+    Порядок не случайный: первым то, что она правит сама («не забыть» и
+    «куплено»), потом то, что читается («по дням», «багаж»). Заголовки
+    первых двух показывают счёт и сумму — свёрнутое должно говорить, что
+    внутри, само.
     """
     parts = [
-        ("Решить и забронировать", checklist(trip)),
-        ("По дням", by_day(trip, stays, alerts)),
-        ("Багаж", luggage(trip)),
+        ("todo", "Решить и забронировать", checklist(trip)),
+        ("bought", "Куплено отдельно", bought()),
+        ("days", "По дням", by_day(trip, stays, alerts)),
+        ("luggage", "Багаж", luggage(trip)),
     ]
     return "".join(
-        f'<details class="more"><summary>{e(name)}</summary>{body}</details>'
-        for name, body in parts
+        f'<details class="more" data-fold="{e(key)}"><summary>{e(name)}'
+        f'<span class="tag" data-tag="{e(key)}"></span></summary>{body}</details>'
+        for key, name, body in parts
     )
+
+
+def island(trip: dict, stays: list, all_legs: list) -> str:
+    """Всё, что странице нужно знать про уже посчитанное, — одним куском.
+
+    Числа считает питон при сборке (и проверяет `check`), а браузер их только
+    складывает с её записями. Второй раз пересчитывать брони в JS нельзя: два
+    счёта одного и того же — это два разных числа с одним именем, и разойтись
+    они успеют молча.
+
+    Лежит в `application/json`, а не в переменной: содержимое не исполняется,
+    и `</script>` внутри строки не может закрыть блок раньше времени —
+    угловая скобка ниже экранируется на всякий случай.
+    """
+    total = sum(s["total_jpy"] for s in stays)
+    payload = {
+        "fx": {
+            "usd_per_jpy": FX["usd_per_jpy"],
+            "as_of": FX["as_of"],
+            "human": fx_human_date(),
+        },
+        "housing": {
+            "jpy": total,
+            # Доллар итога — сумма показанных городских долларов, а не
+            # пересчёт общей иены: столбик на экране обязан сойтись с числом
+            # под ним (см. README).
+            "usd": sum(round(leg["jpy"] / FX["usd_per_jpy"]) for leg in all_legs),
+            "paid": sum(s["payment"].get("paid_jpy", 0) for s in stays),
+            "upcoming": sum(s["payment"].get("upcoming_jpy", 0) for s in stays),
+            "onsite": sum(s["total_jpy"] for s in stays
+                          if s["payment"]["mode"] == "at_property"),
+            "count": len(stays),
+            "nights": sum(leg["nights"] for leg in all_legs),
+        },
+        "cities": [
+            {"id": leg["stays"][0]["id"], "city": leg["city"], "area": leg["area"]}
+            for leg in all_legs
+        ],
+        "groups": [g["group"] for g in trip["todo"]],
+    }
+    text = json.dumps(payload, ensure_ascii=False).replace("<", "\\u003c")
+    return f'<script type="application/json" id="japan-data">{text}</script>'
 
 
 def colophon(trip: dict) -> str:
     return f"""
 <footer class="colophon">
   <span>Обновлено {day_month(trip["trip"]["updated"])} {d(trip["trip"]["updated"]).year}.</span>
-  <span>Страница собирается из одного файла с данными — попроси Блэйза внести
-  правку, и она появится здесь.</span>
+  <span>Места, брони и пункты списка вписывай сама — они сохраняются здесь же
+  и никуда не денутся. Отели, даты и сроки отмены вносит Блэйз.</span>
 </footer>"""
 
 
@@ -839,6 +1037,11 @@ CSS = """
   --fill-onsite:repeating-linear-gradient(-45deg,var(--gold) 0 2px,rgba(255,255,255,.75) 2px 4.5px);
 }
 *{box-sizing:border-box}
+/* `hidden` обязан выигрывать у наших `display`. Без этой строки `.pane{display:grid}`
+   перебивает атрибут — и форма, объявленная спрятанной, стоит развёрнутой во
+   весь экран. Так и случилось: страница выросла на 292 точки, а спрятанной
+   форма при этом считалась. */
+[hidden]{display:none !important}
 html{-webkit-text-size-adjust:100%}
 body{
   margin:0; background:var(--paper); color:var(--ink);
@@ -1078,6 +1281,90 @@ code{font-size:.88em; background:var(--sand); padding:1px 5px; border-radius:4px
 .blank b{display:block; font-size:11.5px; margin-top:6px; line-height:1.2}
 .blank .nt{display:block; font-size:9.5px; color:var(--quiet); margin-top:2px}
 
+/* ── то, что вносит она сама
+
+   Её записи выглядят как записи, а не как брони: та же пунктирная логика, что
+   у желаний, плюс чип с состоянием денег. Различие «оплачено / предстоит / на
+   месте» держится словом и фактурой квадратика, а не оттенком: плохой экран
+   первым съедает именно оттенок. */
+.adder{margin-top:16px; padding-top:13px; border-top:1px solid var(--rule)}
+.knobs{display:flex; flex-wrap:wrap; align-items:center; gap:8px 10px}
+.knobs .cap{margin:0 4px 0 0; font-size:9.5px; letter-spacing:.17em;
+  text-transform:uppercase; color:var(--quiet)}
+.knob,.tiny{font-family:inherit; cursor:pointer; color:var(--ink); background:var(--card);
+  border:1px solid var(--rule); border-radius:99px; padding:7px 13px; font-size:12.5px}
+.knob:hover,.tiny:hover{background:var(--sand)}
+.knob:focus-visible,.tiny:focus-visible,.save:focus-visible,.drop:focus-visible{
+  outline:2px solid var(--gold); outline-offset:2px}
+.tiny{margin-top:7px; padding:5px 11px; font-size:11.5px; color:var(--deep)}
+.storesays{font-size:11.5px; color:var(--fire)}
+.pane{margin-top:12px; padding:13px 15px 14px; background:var(--card);
+  border:1px solid var(--hair); border-radius:10px;
+  display:grid; grid-template-columns:repeat(auto-fit,minmax(168px,1fr)); gap:10px 14px;
+  align-items:end}
+.pane .what{grid-column:1/-1; margin:0; font-family:var(--serif); font-size:16px}
+.pane .f{display:flex; flex-direction:column; gap:3px; min-width:0}
+.pane .f.wide{grid-column:span 2}
+.pane label{font-size:9.5px; letter-spacing:.12em; text-transform:uppercase; color:var(--quiet)}
+.pane input,.pane select{font-family:inherit; font-size:14px; color:var(--ink);
+  background:var(--paper); border:1px solid var(--rule); border-radius:7px;
+  padding:8px 9px; min-height:38px; width:100%; min-width:0}
+.pane .pair{display:flex; gap:6px}
+.pane .pair input{flex:2 1 60px} .pane .pair select{flex:1 1 90px}
+.pane .go{grid-column:1/-1; display:flex; flex-wrap:wrap; align-items:center; gap:9px 12px;
+  margin-top:2px}
+.save,.drop{font-family:inherit; font-size:13.5px; cursor:pointer; border-radius:8px;
+  padding:10px 18px; min-height:40px; border:1px solid var(--deep);
+  background:var(--deep); color:#fff}
+.drop{background:none; color:var(--deep); border-color:var(--rule)}
+.save[disabled]{opacity:1; background:var(--quiet); border-color:var(--quiet); cursor:default}
+.pane .says{font-size:12px; color:var(--fire)}
+.orphans{margin-top:12px; border:1px dashed var(--fire); border-radius:8px; padding:8px 11px}
+.orphans .cap{margin:0 0 4px; font-size:10px; letter-spacing:.1em; text-transform:uppercase;
+  color:var(--fire)}
+
+/* Строка её записи — в карточке города, в «куплено» и в списке. */
+.own{position:relative; padding:6px 0 7px 14px; line-height:1.35;
+  border-bottom:1px solid var(--hair)}
+.own::before{content:"◆"; position:absolute; left:0; top:7px; font-size:8.5px; color:var(--bronze)}
+.own > b,.own .head b{font-size:12.5px; font-weight:600}
+.own .head{display:flex; flex-wrap:wrap; gap:0 8px; align-items:baseline}
+.own .when{font-family:var(--num); font-size:10.5px; color:var(--quiet)}
+.own .what{display:block; font-size:11px; color:var(--quiet); line-height:1.35}
+.own .tab{display:flex; flex-wrap:wrap; align-items:baseline; gap:2px 8px; margin-top:3px}
+.own .usd{font-family:var(--serif); font-size:15px; font-weight:600}
+.own .jpy{font-family:var(--num); font-size:10.5px; color:var(--quiet)}
+.own .noprice{font-size:10.5px; color:var(--quiet); font-style:italic}
+.chip{font-size:10px; letter-spacing:.04em; padding:1px 7px 2px 17px; border-radius:99px;
+  border:1px solid currentColor; position:relative; white-space:nowrap}
+.chip::before{content:""; position:absolute; left:5px; top:4px; width:7px; height:7px;
+  border-radius:2px; border:1.5px solid currentColor}
+.chip.paid{color:var(--moss)} .chip.paid::before{background:currentColor}
+.chip.due{color:var(--fire)} .chip.due::before{box-shadow:inset 0 -2px 0 currentColor}
+.chip.onsite{color:var(--gold)}
+.tools{display:flex; gap:9px; margin-top:2px}
+.ed,.rm{background:none; border:0; padding:2px 0; font-family:inherit; font-size:10.5px;
+  color:var(--quiet); cursor:pointer; border-bottom:1px dotted var(--rule)}
+.ed:hover,.rm:hover{color:var(--ink)}
+.own.fresh{background:var(--sand); border-radius:6px}
+.rows-list{list-style:none; margin:0; padding:0}
+.todo-group .own{padding-left:0}
+.todo-group .own::before{display:none}
+.todo-group .own .tab,.todo-group .own .tools{margin-left:31px}
+#bought .none,.wishes .none[hidden]{display:none}
+#bought .none:not([hidden]){display:block; margin:0; font-size:12px; color:var(--quiet)}
+
+/* Из чего сложился чек — под самим чеком, чтобы столбик можно было сверить
+   глазами, не листая. */
+.parts{list-style:none; margin:10px 0 0; padding:0; display:flex; flex-wrap:wrap;
+  gap:2px 16px; font-size:11.5px}
+.parts .part{color:var(--quiet)}
+.parts .part .num{font-family:var(--num); color:var(--ink); margin-left:5px}
+.parts .built .who{color:var(--deep)}
+.total .says{display:block; margin:7px 0 0; font-size:11px; color:var(--quiet); line-height:1.45}
+.more > summary .tag{font-size:10px; letter-spacing:.06em; text-transform:none;
+  color:var(--gold); font-weight:600}
+
 /* ── свёрнутое: списки, дни, багаж */
 .more{border-bottom:1px solid var(--hair)}
 .more:first-of-type{border-top:1px solid var(--rule); margin-top:26px}
@@ -1178,8 +1465,13 @@ input:checked ~ .txt{color:var(--deep); text-decoration:line-through}
   .alert .facts{display:block; margin-top:8px}
   .unknown{margin-left:0}
   .blank{flex:1 1 100px; width:auto}
-  /* Пальцем попадать: карта, телефон и все свёртки — не мельче 36px. */
+  /* Пальцем попадать: карта, телефон, все свёртки и всё, чем она правит
+     страницу, — не мельче 36px. Проверяется в test/wide.py по этому же
+     списку: обещание, которое никто не меряет, живёт ровно до первой правки. */
   .btn,.wish-more summary{min-height:36px; display:flex; align-items:center}
+  .knob,.tiny,.ed,.rm,.save,.drop{min-height:36px; display:inline-flex; align-items:center}
+  .pane{grid-template-columns:1fr}
+  .pane .f.wide{grid-column:span 1}
   .stayfine > summary{min-height:44px; align-content:center}
   .rows dd{font-size:12.5px}
   .city .inner,.city .cap{padding-left:16px; padding-right:16px}
@@ -1189,10 +1481,16 @@ input:checked ~ .txt{color:var(--deep); text-decoration:line-through}
 }
 """
 
+# Математика чека лежит отдельным файлом и уезжает на страницу байт в байт:
+# `test/entries.test.mjs` читает тот же файл и гоняет те же строки. Считать
+# деньги копией кода, похожей на ту, что у неё на экране, — это два разных
+# числа с одним именем.
+MONEY_JS = (SITE / "money.js").read_text(encoding="utf-8")
+
+
 JS = """
 (function(){
   "use strict";
-  var KEY = "japan2027.todo.v1";
 
   /* Сколько осталось до срока. Считается в браузере, потому что страница
      собирается редко, а «осталось 3 дня» стареет каждые сутки. */
@@ -1228,29 +1526,498 @@ JS = """
     if (left.soon) node.classList.add("soon");
   });
 
-  /* Галочки. Источник правды — trip.json; здесь только то, что Ни отметила
-     на этом телефоне, поверх него. Поэтому хранится разница, а не состояние:
-     когда решение переедет в файл, галочка не начнёт спорить сама с собой. */
-  var boxes = Array.prototype.slice.call(document.querySelectorAll("[data-todo]"));
-  var flipped = {};
-  try { flipped = JSON.parse(localStorage.getItem(KEY) || "{}") || {}; } catch (err) { flipped = {}; }
+  /* Галочки переехали отсюда в хранилище (см. ниже, «её страница»): список,
+     который забывает отмеченное при смене телефона, — это список, которому
+     нельзя доверить визу. Ключ `japan2027.todo.v1` в localStorage больше не
+     пишется и не читается; старое значение, если оно там осталось, просто
+     лежит мёртвым грузом и ни на что не влияет. */
+})();
+"""
 
-  boxes.forEach(function(box){
-    var id = box.getAttribute("data-todo");
-    if (Object.prototype.hasOwnProperty.call(flipped, id)) box.checked = !!flipped[id];
-    var built = box.defaultChecked;
-    box.addEventListener("change", function(){
-      if (box.checked === built) delete flipped[id];
-      else flipped[id] = box.checked;
-      try { localStorage.setItem(KEY, JSON.stringify(flipped)); } catch (err) {}
+
+# ─────────────────────────────────────────── её страница
+#
+# Всё, что Ни вписывает сама, живёт в хранилище на сайте, а не в этих файлах:
+# сборка стирает `dist/` целиком, и запись, оказавшаяся в собранной странице,
+# исчезла бы при первой же пересборке. Поэтому страница приезжает пустой, а
+# записи и галочки забирает у `/api/entries` — за той же дверью, тем же
+# паролем.
+#
+# Числа по броням сюда не пересчитываются: они приехали посчитанными в
+# `#japan-data`. Здесь только сложение её записей с ними — тем самым
+# `money.js`, который лежит выше в этом же теге и проверен тестом.
+APP_JS = """
+(function(){
+  "use strict";
+  var box = document.getElementById("japan-data");
+  if (!box || !window.JapanMoney) return;
+  var data = JSON.parse(box.textContent);
+  var API = "/api/entries";
+  var THIN = "\\u202f";
+
+  /* «live» — доехали ли до нас её записи. Пока не доехали, страница обязана
+     показывать жильё и говорить об этом словами: подпись под числом всегда
+     про то число, которое рядом, а не про то, каким оно станет. */
+  var state = { entries: [], ticks: {}, live: false, why: "" };
+  var editing = null;
+
+  var form = document.querySelector("[data-form]");
+  /* Поля берутся только через `elements`: у формы есть собственное свойство
+     `title` (это атрибут, а не поле ввода), и `form.title` молча вернул бы
+     пустую строку вместо того, что она набрала. */
+  function field(name){ return form ? form.elements[name] : null; }
+  var says = document.querySelector("[data-form-says]");
+  var storeSays = document.querySelector("[data-store-says]");
+  var check = document.getElementById("check");
+  var capWas = check ? check.querySelector("[data-cap]").textContent : "";
+
+  function el(tag, cls, text){
+    var node = document.createElement(tag);
+    if (cls) node.className = cls;
+    if (text !== undefined && text !== null) node.textContent = text;
+    return node;
+  }
+  function group(n){
+    return String(Math.round(Math.abs(n))).replace(/\\B(?=(\\d{3})+(?!\\d))/g, THIN);
+  }
+  function yen(n){ return "\\u00a5" + group(n); }
+  function dollars(n){ return "$" + group(n); }
+  /* Введённое ею в долларах показывается ровно так, как введено: пересчёт
+     туда и обратно превратил бы её $12,5 в $13, а это её число, не наше. */
+  function shownUsd(entry){
+    if (entry.currency === "usd") {
+      return "$" + String(entry.amount).replace(".", ",");
+    }
+    return dollars(JapanMoney.usdOf(entry, data.fx));
+  }
+
+  var STATE_WORDS = { paid: "уже оплачено", upcoming: "предстоит", onsite: "плачу на месте" };
+  var STATE_CLASS = { paid: "paid", upcoming: "due", onsite: "onsite" };
+  var MONTHS = ["января","февраля","марта","апреля","мая","июня","июля","августа",
+                "сентября","октября","ноября","декабря"];
+  function human(iso){
+    var bits = /^(\\d{4})-(\\d{2})-(\\d{2})$/.exec(iso || "");
+    if (!bits) return "";
+    return Number(bits[3]) + "\\u00a0" + MONTHS[Number(bits[2]) - 1];
+  }
+
+  /* ── разговор с хранилищем */
+
+  function ask(method, body){
+    var init = { method: method, credentials: "same-origin", cache: "no-store" };
+    if (body) {
+      init.headers = { "content-type": "application/json" };
+      init.body = JSON.stringify(body);
+    }
+    return fetch(API, init).then(function(response){
+      return response.json().then(function(said){ return { response: response, said: said }; },
+        function(){ return { response: response, said: {} }; });
+    }).then(function(got){
+      if (!got.response.ok || got.said.ok === false) {
+        throw new Error(got.said.why || ("не получилось (" + got.response.status + ")"));
+      }
+      return got.said;
+    });
+  }
+
+  /* Ответ на правку — всё состояние целиком, и рисуем мы именно его, а не
+     перечитываем список следом: KV догоняет себя не мгновенно, и перечитанное
+     может оказаться вчерашним. */
+  function adopt(said){
+    state.entries = Array.isArray(said.entries) ? said.entries : [];
+    state.ticks = said.ticks || {};
+    state.live = true;
+    state.why = "";
+    paint();
+  }
+
+  function offline(error){
+    state.live = false;
+    state.why = error && error.message ? error.message : "нет связи с сайтом";
+    paint();
+  }
+
+  /* ── рисование */
+
+  function priceTag(entry){
+    var tag = el("span", "tab");
+    if (JapanMoney.hasPrice(entry)) {
+      tag.appendChild(el("b", "usd", shownUsd(entry)));
+      tag.appendChild(el("span", "jpy", yen(JapanMoney.yenOf(entry, data.fx))));
+    } else {
+      /* Пустая цена — подпись, а не ноль: ноль значит «бесплатно». */
+      tag.appendChild(el("span", "noprice", "цены нет"));
+    }
+    var mark = el("span", "chip " + STATE_CLASS[JapanMoney.stateOf(entry)],
+                  STATE_WORDS[JapanMoney.stateOf(entry)]);
+    tag.appendChild(mark);
+    return tag;
+  }
+
+  function tools(entry){
+    var wrap = el("span", "tools");
+    var edit = el("button", "ed", "правка");
+    edit.type = "button";
+    edit.addEventListener("click", function(){ openForm(entry.kind, entry); });
+    var drop = el("button", "rm", "убрать");
+    drop.type = "button";
+    drop.addEventListener("click", function(){
+      if (!window.confirm("Убрать «" + entry.title + "»?")) return;
+      ask("DELETE", { id: entry.id }).then(adopt).catch(function(error){
+        tell(storeSays, "не убралось: " + error.message);
+      });
+    });
+    wrap.appendChild(edit);
+    wrap.appendChild(drop);
+    return wrap;
+  }
+
+  function placeLine(entry){
+    var li = el("li", "own");
+    li.setAttribute("data-id", entry.id);
+    li.appendChild(el("b", null, entry.title));
+    if (entry.note) li.appendChild(el("span", "what", entry.note));
+    li.appendChild(priceTag(entry));
+    li.appendChild(tools(entry));
+    return li;
+  }
+
+  function boughtLine(entry){
+    var li = el("li", "own");
+    li.setAttribute("data-id", entry.id);
+    var head = el("span", "head");
+    head.appendChild(el("b", null, entry.title));
+    if (entry.when) head.appendChild(el("span", "when", human(entry.when)));
+    li.appendChild(head);
+    if (entry.note) li.appendChild(el("span", "what", entry.note));
+    li.appendChild(priceTag(entry));
+    li.appendChild(tools(entry));
+    return li;
+  }
+
+  function todoLine(entry){
+    var li = el("li", "own");
+    li.setAttribute("data-id", entry.id);
+    var label = document.createElement("label");
+    var input = document.createElement("input");
+    input.type = "checkbox";
+    input.checked = entry.done === true;
+    input.addEventListener("change", function(){
+      ask("PATCH", { id: entry.id, done: input.checked }).then(adopt).catch(function(error){
+        input.checked = !input.checked;
+        tell(storeSays, "галочка не сохранилась: " + error.message);
+      });
+    });
+    label.appendChild(input);
+    label.appendChild(el("span", "tick"));
+    var text = el("span", "txt", entry.title);
+    if (entry.note || entry.when) {
+      var extra = entry.note || "";
+      if (entry.when) extra = (extra ? extra + " · " : "") + human(entry.when);
+      text.appendChild(el("em", null, extra));
+    }
+    label.appendChild(text);
+    li.appendChild(label);
+    li.appendChild(priceTag(entry));
+    li.appendChild(tools(entry));
+    return li;
+  }
+
+  function empty(node){ while (node && node.firstChild) node.removeChild(node.firstChild); }
+
+  function paintEntries(){
+    var known = {};
+    Array.prototype.forEach.call(document.querySelectorAll("[data-mine]"), function(node){
+      empty(node);
+      var name = node.getAttribute("data-mine");
+      if (name) known[name] = node;
+    });
+
+    var orphans = [];
+    var byGroup = {};
+    Array.prototype.forEach.call(document.querySelectorAll("[data-mine-todo]"), function(node){
+      empty(node);
+      byGroup[node.getAttribute("data-mine-todo")] = node;
+    });
+    var boughtList = document.querySelector("[data-mine-booking]");
+    empty(boughtList);
+
+    state.entries.forEach(function(entry){
+      if (entry.kind === "place") {
+        var home = known[entry.stay];
+        if (home) home.appendChild(placeLine(entry));
+        else orphans.push(entry);
+      } else if (entry.kind === "booking") {
+        if (boughtList) boughtList.appendChild(boughtLine(entry));
+      } else {
+        var where = byGroup[entry.group] || byGroup["Ещё"];
+        if (where) where.appendChild(todoLine(entry));
+      }
+    });
+
+    /* Место, чей город исчез из trip.json, показывается отдельно, а не
+       пропадает: пропажу никто не заметит, а это её запись. */
+    var orphanBox = document.querySelector("[data-orphans]");
+    var orphanList = document.querySelector("[data-mine-orphan]");
+    if (orphanBox && orphanList) {
+      empty(orphanList);
+      orphans.forEach(function(entry){ orphanList.appendChild(placeLine(entry)); });
+      orphanBox.hidden = orphans.length === 0;
+    }
+
+    var spare = document.querySelector("[data-spare]");
+    if (spare) spare.hidden = !spare.querySelector("li");
+
+    Array.prototype.forEach.call(document.querySelectorAll("[data-none]"), function(node){
+      var card = node.closest(".wishes");
+      var mine = card ? card.querySelector("[data-mine]") : null;
+      var built = card ? card.querySelector("ul:not(.mine) li") : null;
+      node.hidden = !!built || !!(mine && mine.firstChild);
+    });
+    var noneBought = document.querySelector("[data-none-booking]");
+    if (noneBought) noneBought.hidden = !!(boughtList && boughtList.firstChild);
+  }
+
+  function paintTicks(){
+    Array.prototype.forEach.call(document.querySelectorAll("[data-todo]"), function(input){
+      var name = input.getAttribute("data-todo");
+      var built = input.getAttribute("data-built") === "true";
+      input.checked = Object.prototype.hasOwnProperty.call(state.ticks, name)
+        ? state.ticks[name] === true : built;
+    });
+  }
+
+  function paintFolds(){
+    var left = 0;
+    Array.prototype.forEach.call(document.querySelectorAll("[data-todo]"), function(input){
+      if (!input.checked) left += 1;
+    });
+    state.entries.forEach(function(entry){
+      if (entry.kind === "todo" && entry.done !== true) left += 1;
+    });
+    var todoTag = document.querySelector('[data-tag="todo"]');
+    if (todoTag) todoTag.textContent = left ? left + " не сделано" : "всё отмечено";
+
+    var boughtTag = document.querySelector('[data-tag="bought"]');
+    if (boughtTag) {
+      var mine = state.entries.filter(function(x){ return x.kind === "booking"; });
+      var sum = mine.reduce(function(acc, x){ return acc + JapanMoney.yenOf(x, data.fx); }, 0);
+      boughtTag.textContent = mine.length ? mine.length + " · " + yen(sum) : "пусто";
+    }
+  }
+
+  function tell(node, words){
+    if (!node) return;
+    node.textContent = words || "";
+    node.hidden = !words;
+  }
+
+  /* Чек. Пока её записей нет или они не доехали — заголовок говорит «жильё» и
+     показывает жильё. Как только записи есть, то же место становится чеком
+     всей поездки, и под ним появляется, из чего он сложился: число, которое
+     нельзя проверить глазами, — плохое число. */
+  function paintCheck(){
+    if (!check) return;
+    var cap = check.querySelector("[data-cap]");
+    var usdNode = check.querySelector("[data-usd]");
+    var jpyNode = check.querySelector("[data-jpy]");
+    var parts = check.querySelector("[data-parts]");
+    var line = check.querySelector("[data-says]");
+    var sums = JapanMoney.tally({ fx: data.fx, housing: data.housing, entries: state.entries });
+    var mine = state.entries.length;
+
+    empty(parts);
+    if (!state.live) {
+      cap.textContent = capWas;
+      usdNode.textContent = dollars(data.housing.usd);
+      jpyNode.textContent = yen(data.housing.jpy);
+      paintBar(data.housing);
+      parts.hidden = true;
+      tell(line, "твои записи не загрузились (" + state.why + ") — здесь только жильё");
+      return;
+    }
+    if (!mine) {
+      cap.textContent = capWas;
+      usdNode.textContent = dollars(data.housing.usd);
+      jpyNode.textContent = yen(data.housing.jpy);
+      paintBar(data.housing);
+      parts.hidden = true;
+      tell(line, "добавь место, бронь или пункт списка — они сразу попадут в этот чек");
+      return;
+    }
+
+    cap.textContent = "вся поездка · жильё и твои записи";
+    usdNode.textContent = dollars(sums.usd);
+    jpyNode.textContent = yen(sums.jpy);
+    paintBar(sums.states);
+
+    sums.sections.forEach(function(section){
+      if (!section.count) return;
+      var li = el("li", section.key === "housing" ? "part built" : "part");
+      li.appendChild(el("span", "who", section.title));
+      li.appendChild(el("b", "num", yen(section.jpy)));
+      parts.appendChild(li);
+    });
+    parts.hidden = false;
+
+    var words = [];
+    if (sums.priceless) {
+      words.push(sums.priceless + " "
+        + (sums.priceless === 1 ? "запись" : (sums.priceless < 5 ? "записи" : "записей"))
+        + " без цены — в сумму не входят");
+    }
+    words.push("сложено из показанного: " + yen(data.housing.jpy) + " жильё и твои записи");
+    tell(line, words.join(" · "));
+  }
+
+  function paintBar(states){
+    var total = states.paid + states.upcoming + states.onsite;
+    ["paid", "upcoming", "onsite"].forEach(function(name){
+      var seg = check.querySelector('[data-seg="' + name + '"]');
+      var num = check.querySelector('[data-money="' + name + '"]');
+      if (seg) seg.style.width = total ? (states[name] / total * 100).toFixed(1) + "%" : "0";
+      if (num) num.textContent = yen(states[name]);
+    });
+  }
+
+  function paint(){
+    paintEntries();
+    paintTicks();
+    paintFolds();
+    paintCheck();
+    if (state.live) tell(storeSays, "");
+  }
+
+  /* ── форма */
+
+  function fields(kind){
+    Array.prototype.forEach.call(form.querySelectorAll("[data-only]"), function(node){
+      node.hidden = node.getAttribute("data-only").split(" ").indexOf(kind) < 0;
+    });
+  }
+
+  function openForm(kind, entry){
+    if (!form) return;
+    editing = entry ? entry.id : null;
+    form.hidden = false;
+    form.setAttribute("data-kind", kind);
+    fields(kind);
+    var what = { place: "место", booking: "бронь или билет", todo: "пункт списка" }[kind];
+    form.querySelector("[data-form-what]").textContent =
+      (entry ? "Правка: " : "Новое — ") + what;
+    field("title").value = entry ? entry.title : "";
+    field("note").value = entry && entry.note ? entry.note : "";
+    field("amount").value = entry && JapanMoney.hasPrice(entry) ? String(entry.amount) : "";
+    field("currency").value = entry && entry.currency ? entry.currency : "jpy";
+    field("state").value = entry ? JapanMoney.stateOf(entry) : JapanMoney.stateOf({ kind: kind });
+    if (kind === "place" && field("stay")) {
+      field("stay").value = entry && entry.stay ? entry.stay : field("stay").options[0].value;
+    }
+    if (field("when")) field("when").value = entry && entry.when ? entry.when : "";
+    if (field("group")) field("group").value = (entry && entry.group) || "Ещё";
+    tell(says, "");
+    field("title").focus();
+  }
+
+  function closeForm(){
+    editing = null;
+    if (form) { form.hidden = true; form.reset(); }
+  }
+
+  Array.prototype.forEach.call(document.querySelectorAll("[data-add]"), function(button){
+    button.addEventListener("click", function(){
+      var kind = button.getAttribute("data-add");
+      openForm(kind, null);
+      if (kind === "place" && button.getAttribute("data-stay") && field("stay")) {
+        field("stay").value = button.getAttribute("data-stay");
+      }
+      form.scrollIntoView({ block: "center", behavior: "smooth" });
+    });
+  });
+
+  var cancel = form ? form.querySelector("[data-cancel]") : null;
+  if (cancel) cancel.addEventListener("click", closeForm);
+
+  if (form) form.addEventListener("submit", function(event){
+    event.preventDefault();
+    var kind = form.getAttribute("data-kind");
+    var body = {
+      kind: kind,
+      title: field("title").value,
+      note: field("note").value,
+      amount: field("amount").value,
+      currency: field("currency").value,
+      state: field("state").value
+    };
+    if (kind === "place") body.stay = field("stay").value;
+    else body.when = field("when").value;
+    if (kind === "todo") body.group = field("group").value;
+
+    var save = form.querySelector(".save");
+    var was = editing;
+    save.disabled = true;
+    tell(says, "сохраняю…");
+    var sending = was ? ask("PATCH", Object.assign({ id: was }, body)) : ask("POST", body);
+    sending.then(function(said){
+      adopt(said);
+      closeForm();
+      var fold = document.querySelector('[data-fold="' + (kind === "booking" ? "bought" : "todo") + '"]');
+      if (kind !== "place" && fold) fold.open = true;
+      var fresh = document.querySelector('[data-id="' + (was || freshest(said, kind)) + '"]');
+      if (fresh) {
+        fresh.classList.add("fresh");
+        fresh.scrollIntoView({ block: "center", behavior: "smooth" });
+        window.setTimeout(function(){ fresh.classList.remove("fresh"); }, 2000);
+      }
+    }).catch(function(error){
+      tell(says, error.message);
+    }).then(function(){ save.disabled = false; });
+  });
+
+  function freshest(said, kind){
+    var mine = (said.entries || []).filter(function(x){ return x.kind === kind; });
+    return mine.length ? mine[mine.length - 1].id : "";
+  }
+
+  /* ── галочки на пунктах из trip.json */
+
+  Array.prototype.forEach.call(document.querySelectorAll("[data-todo]"), function(input){
+    input.addEventListener("change", function(){
+      ask("PATCH", {
+        tick: input.getAttribute("data-todo"),
+        done: input.checked,
+        built: input.getAttribute("data-built") === "true"
+      }).then(adopt).catch(function(error){
+        input.checked = !input.checked;
+        tell(storeSays, "галочка не сохранилась: " + error.message);
+      });
     });
   });
 
   var reset = document.querySelector("[data-reset]");
   if (reset) reset.addEventListener("click", function(){
-    flipped = {};
-    try { localStorage.removeItem(KEY); } catch (err) {}
-    boxes.forEach(function(box){ box.checked = box.defaultChecked; });
+    var names = Object.keys(state.ticks);
+    if (!names.length) return;
+    if (!window.confirm("Снять все отмеченные галочки? Это видно на всех устройствах.")) return;
+    var chain = Promise.resolve();
+    names.forEach(function(name){
+      var input = document.querySelector('[data-todo="' + name.replace(/"/g, '\\\\"') + '"]');
+      var built = input ? input.getAttribute("data-built") === "true" : false;
+      chain = chain.then(function(){
+        return ask("PATCH", { tick: name, done: built, built: built });
+      });
+    });
+    chain.then(adopt).catch(function(error){
+      tell(storeSays, "не сбросилось: " + error.message);
+    });
+  });
+
+  /* ── первый вдох */
+
+  paint();
+  ask("GET").then(adopt).catch(function(error){
+    offline(error);
+    tell(storeSays, "записи не загрузились: " + error.message);
   });
 })();
 """
@@ -1282,11 +2049,15 @@ def render(trip: dict) -> str:
   {thread(trip, all_legs)}
   {alert_block(alerts)}
   {city_cards(all_legs, alerts, places, trip.get("cancelled", []))}
+  {adder(trip, all_legs)}
   {ledger(trip, stays, all_legs)}
   {more_block(trip, stays, alerts)}
   {colophon(trip)}
 </div>
-<script>{JS}</script>
+{island(trip, stays, all_legs)}
+<script>{MONEY_JS}
+{JS}
+{APP_JS}</script>
 </body>
 </html>
 """
@@ -1304,6 +2075,37 @@ a{color:#2f4b7c}
 """
 
 
+def write_stays(all_legs: list) -> list[str]:
+    """Список городов, к которым можно привязать место, — для двери.
+
+    Ручка `/api/entries` обязана уметь отказать месту, повешенному на город,
+    которого на странице нет: иначе запись ляжет в хранилище и **тихо не
+    покажется** — ровно то, от чего в `check()` стоит правило №6.
+
+    Проверять это по `trip.json` ручка не может: на Cloudflare рядом с ней
+    нет ни файла с данными, ни питона. Поэтому список выкладывается сюда
+    сборкой — как `_cards.js` у вишлиста — и лежит в git видимым куском, а не
+    угадывается в рантайме.
+
+    Здесь ровно те же ключи, что и у мешков `data-mine` на странице: город
+    сливает соседние брони в один отрезок, и место цепляется к первой из них.
+    Совпадение этих двух списков — не совпадение, а условие: принятая запись
+    обязана иметь, куда показаться.
+    """
+    ids = [leg["stays"][0]["id"] for leg in all_legs]
+    body = json.dumps(ids, ensure_ascii=False)
+    (SITE / "functions" / "api" / "_stays.js").write_text(
+        "/* Собирается `build.py` — руками не править.\n"
+        "\n"
+        "   Города, к которым можно привязать место. Список тот же, что у мешков\n"
+        "   `data-mine` на собранной странице: запись, принятая ручкой, обязана\n"
+        "   иметь, куда показаться. */\n"
+        f"\nexport const STAYS = {body};\n",
+        encoding="utf-8",
+    )
+    return ids
+
+
 def main() -> int:
     trip = json.loads(DATA.read_text(encoding="utf-8"))
     load_fx(trip)
@@ -1319,6 +2121,13 @@ def main() -> int:
     if "--check" in sys.argv:
         print("✓ только проверка, ничего не собрано")
         return 0
+
+    # Список городов для двери — до копирования функций: иначе в выложенную
+    # папку уедет вчерашний, и место, привязанное к новому городу, будет
+    # отбито ручкой как несуществующее.
+    ids = write_stays(legs(sorted(trip["stays"],
+                                  key=lambda s: (s["checkin"]["date"], s["checkout"]["date"]))))
+    print("· города, к которым можно привязать место: " + ", ".join(ids))
 
     if DIST.exists():
         shutil.rmtree(DIST)
