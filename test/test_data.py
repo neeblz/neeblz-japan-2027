@@ -40,7 +40,11 @@ class DataHolds(unittest.TestCase):
 
     def test_totals_are_the_expected_numbers(self):
         stays = REAL["stays"]
-        self.assertEqual(sum(s["total_jpy"] for s in stays), 297_912)
+        # 290 675, а не 297 912: 23 августа Ни прислала новое подтверждение
+        # по lyf Ginza — тариф ASR Advanced Purchase, ¥50 205 вместо ¥57 442
+        # (номер 41 492 + налог 4 564 + сбор 4 149). Число живёт здесь, чтобы
+        # тихая правка её денег краснела.
+        self.assertEqual(sum(s["total_jpy"] for s in stays), 290_675)
         self.assertEqual(sum(s["payment"]["paid_jpy"] for s in stays), 12_010)
         self.assertEqual(sum(s["payment"]["upcoming_jpy"] for s in stays), 109_790)
         # Оплаченных ночей 15, прожитых 14: ночь 14-го оплачена дважды.

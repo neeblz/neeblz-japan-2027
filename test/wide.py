@@ -170,7 +170,9 @@ with sync_playwright() as pw:
 
     # ── деньги: доллар крупно, иена рядом, курс подписан датой
     total = page.locator(".total").inner_text()
-    want("$" in total and "¥297" in total.replace(" ", " ").replace(" ", " "),
+    # ¥290 675 с 23 августа: новое подтверждение lyf Ginza (¥50 205 вместо
+    # ¥57 442). Число прибито нарочно — тихая правка её денег обязана краснеть.
+    want("$" in total and "¥290" in total.replace(" ", " ").replace(" ", " "),
          "итог показан в долларах и иенах")
     want("курс на" in total, "курс подписан датой")
 
@@ -194,7 +196,8 @@ with sync_playwright() as pw:
     # Разряды и даты разведены неразрывными пробелами — сравниваем по словам,
     # а не по тому, каким именно пробелом они разделены.
     outside = " ".join(page.locator(".city").first.inner_text().lower().split())
-    for kept in ("5 — 9 января", "$362", "бесплатная отмена", "хочу сходить"):
+    # «$316» вместо «$362» — та же новая бронь lyf: 50 205 ¥ по курсу 158.88.
+    for kept in ("5 — 9 января", "$316", "бесплатная отмена", "хочу сходить"):
         want(" ".join(kept.lower().split()) in outside, f'снаружи осталось «{kept}»')
     for hidden in ("Studio Single", "Kyobashi", "+81 3-3528-6505", "с 15:00"):
         want(" ".join(hidden.lower().split()) not in outside, f'под стрелку ушло «{hidden}»')
