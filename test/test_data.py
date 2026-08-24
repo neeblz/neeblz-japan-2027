@@ -21,9 +21,13 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from build import DATA, SITE, Failed, check, load_plan, render, write_plan  # noqa: E402
+from build import (  # noqa: E402
+    DATA, REF_DATA, SITE, Failed, check, check_reference, load_plan, ref_item,
+    reference, render, write_plan,
+)
 
 REAL = json.loads(DATA.read_text(encoding="utf-8"))
+REF = json.loads(REF_DATA.read_text(encoding="utf-8"))
 
 
 def broken(**_unused):
@@ -982,6 +986,188 @@ class TheDaysAreHers(unittest.TestCase):
         # Только id: текст живёт на странице, и второй его экземпляр означал бы,
         # что поправка доезжает до неё через раз.
         self.assertNotIn("Shibuya Sky", made)
+
+
+class TheReferenceCannotPassAGuessOffAsAFact(unittest.TestCase):
+    """Справка внизу: виза, документы до вылета, такс-фри.
+
+    Половина этого класса — про одну-единственную ошибку: непроверенное,
+    нарисованное как факт. Она дороже любой вёрстки на этой странице, потому
+    что ошибиться в ней нельзя заметить глазами: неверная строка выглядит
+    ровно как верная, и разница вылезает в консульстве.
+
+    Три пункта про визу — порядок записи, срок рассмотрения, пошлина — взяты
+    из вторичных источников: сайт посольства Японии в Грузии отвечает нашему
+    серверу 403 на все страницы, включая главную. День, когда они молча
+    станут обычными строками, обязан здесь покраснеть.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.html = reference()
+
+    # ── как выглядит нарисованный пункт
+    #
+    # Классы читаются из разметки, а не угадываются по тексту: `li.fact`,
+    # `li.unsure`, `li.think` — это и есть три вида происхождения, и тест
+    # обязан ловить именно подмену вида, а не пропажу слова.
+    ROW = re.compile(r'<li class="(fact|unsure|think)">(.*?)</li>', re.S)
+
+    def rows(self, html=None):
+        return {
+            re.sub(r"<[^>]+>", "", body): kind
+            for kind, body in self.ROW.findall(html if html is not None else self.html)
+        }
+
+    def test_the_real_reference_counts_up(self):
+        said = "\n".join(check_reference(copy.deepcopy(REF)))
+        # Числа прибиты нарочно: догадка, тихо ставшая фактом, меняет их —
+        # и именно этого мы здесь и ждём.
+        self.assertIn("справка, виза: 4 подтверждено, 3 нет, 0 от нас", said)
+        self.assertIn("справка, до вылета: 2 подтверждено, 0 нет, 1 от нас", said)
+        self.assertIn("6 подтверждено, 0 нет, 0 от нас", said)
+        self.assertIn("16 пунктов", said)
+
+    def test_every_item_is_drawn_as_what_it_is(self):
+        """Сверка экрана с данными: у каждого пункта свой вид, и он тот самый."""
+        drawn = self.rows()
+        for block in REF["blocks"]:
+            for item in block["items"]:
+                found = [k for text, k in drawn.items() if item["text"] in text]
+                self.assertEqual(len(found), 1,
+                                 f'пункт нарисован один раз: «{item["text"][:40]}…»')
+                want = ("think" if item.get("mine") is True
+                        else "fact" if item.get("verified") is True else "unsure")
+                self.assertEqual(found[0], want,
+                                 f'«{item["text"][:40]}…» нарисован как {found[0]}, '
+                                 f"а он {want}")
+
+    def test_the_unconfirmed_say_so_and_say_what_to_ask(self):
+        """Пометки мало: рядом должно стоять, что именно спросить в посольстве.
+
+        Сноской внизу это читают уже после того, как поверили.
+        """
+        unsure = [i for b in REF["blocks"] for i in b["items"]
+                  if i.get("verified") is False]
+        self.assertEqual(len(unsure), 3, "непроверенных три — порядок, срок, пошлина")
+        drawn = re.findall(r'<li class="unsure">(.*?)</li>', self.html, re.S)
+        self.assertEqual(len(drawn), len(unsure))
+        for item in unsure:
+            row = [x for x in drawn if item["text"] in x]
+            self.assertEqual(len(row), 1, f'«{item["text"][:40]}…» нарисован один раз')
+            self.assertIn("не подтверждено", row[0])
+            self.assertIn(item["how"], row[0],
+                          f'сказано, что спросить: «{item["text"][:40]}…»')
+
+    def test_our_own_thinking_is_never_dressed_as_a_rule(self):
+        mine = [i for b in REF["blocks"] for i in b["items"] if i.get("mine") is True]
+        self.assertTrue(mine)
+        for item in mine:
+            self.assertIn("наше соображение", self.html)
+            self.assertEqual(
+                [k for text, k in self.rows().items() if item["text"] in text], ["think"])
+        # И то же снаружи: соображение про новогодние каникулы стоит вне свёртки,
+        # где его видно не открывая, — и там оно тоже помечено.
+        warn = REF["blocks"][0]["warning"]
+        self.assertIs(warn["mine"], True)
+        outside = self.html[:self.html.index('<details class="visa-more"')]
+        self.assertIn(warn["text"], outside, "соображение видно, не открывая")
+        self.assertIn("наше соображение", outside)
+
+    # ── а теперь — умеет ли всё это краснеть
+    #
+    # Проверка, которая ни разу не падала, и отсутствие проверки выглядят
+    # снаружи одинаково. Поэтому на каждое правило — своя поломка.
+
+    def test_a_guess_wearing_the_word_verified_is_refused(self):
+        """Ровно та ошибка, ради которой раздел устроен именно так."""
+        for item in ({"text": "Пошлина — около ¥3 000.", "verified": True,
+                      "mine": True},
+                     {"text": "Пошлина — около ¥3 000."}):
+            with self.assertRaises(Failed) as it:
+                ref_item(item)
+            self.assertIn("происхожден", str(it.exception))
+
+    def test_an_unconfirmed_item_that_stays_silent_is_refused(self):
+        """Не подтверждено — половина ответа. Вторая: что с этим делать."""
+        with self.assertRaises(Failed) as it:
+            ref_item({"text": "Подача по записи.", "verified": False, "how": "  "})
+        self.assertIn("молчит", str(it.exception))
+
+    def test_the_count_of_guesses_is_checked_too(self):
+        data = copy.deepcopy(REF)
+        del data["blocks"][0]["items"][2]["verified"]
+        with self.assertRaises(Failed) as it:
+            check_reference(data)
+        self.assertIn("происхождения", str(it.exception))
+
+    def test_a_reference_without_a_date_is_refused(self):
+        """Правила меняются, а страница живёт месяцами.
+
+        Цифра без даты через полгода читается как сегодняшняя — поэтому дата
+        проверки не необязательное поле, а условие показа.
+        """
+        data = copy.deepcopy(REF)
+        data["checked"] = "недавно"
+        with self.assertRaises(Failed) as it:
+            check_reference(data)
+        self.assertIn("даты проверки", str(it.exception))
+
+    def test_the_date_is_not_in_the_future(self):
+        self.assertLessEqual(date.fromisoformat(REF["checked"]), date.today(),
+                             "проверено задним числом — значит не проверено")
+
+    # ── и то, что видно, не открывая
+    #
+    # Виза — самый срочный срок на странице: вылет 4 января, подача только
+    # очно, конец декабря у японских учреждений нерабочий. Свёрнутая наравне с
+    # такс-фри, она читается как «ещё одна справка» и открывается в феврале.
+
+    def test_the_visa_is_not_hidden_under_the_same_arrow(self):
+        outside = self.html[:self.html.index('<details class="visa-more"')]
+        self.assertIn("самое срочное", outside)
+        self.assertIn(REF["blocks"][0]["lead"], outside, "повод виден снаружи")
+        self.assertIn("4 января", outside)
+        # А подробности — под своей стрелкой, не под общей с такс-фри.
+        self.assertNotIn('data-ref="taxfree"', outside)
+
+    def test_the_tax_free_flip_is_in_the_headline(self):
+        """Кто помнит старые правила, ничего открывать не станет.
+
+        Поэтому «работает наоборот» стоит в строке заголовка, а подпись
+        свёртки говорит, что именно перевернулось.
+        """
+        tax = [b for b in REF["blocks"] if b["id"] == "taxfree"][0]
+        self.assertIn("наоборот", tax["title"], "переворот назван в самих данных")
+        head = re.search(r'data-ref="taxfree">\s*<summary>(.*?)</summary>',
+                         self.html, re.S).group(1)
+        self.assertIn(tax["title"], head)
+        self.assertIn("возвращаешь в аэропорту", head)
+        # Подпись — сжатие пункта, а не отдельное утверждение. Разойтись они
+        # успеют молча: правила меняются, а строка в коде остаётся.
+        items = " ".join(i["text"] for i in tax["items"])
+        self.assertIn("возврат получаешь при вылете", items)
+        self.assertIn("Теперь платишь полную цену с налогом", items)
+
+    def test_the_only_link_is_one_we_opened(self):
+        links = re.findall(r'<a class="btn" href="([^"]+)"', self.html)
+        self.assertEqual(links, ["https://services.digital.go.jp/en/visit-japan-web/"])
+        self.assertIn('rel="noreferrer noopener"', self.html)
+
+    def test_the_check_date_stands_in_the_footer(self):
+        """Отдельной строкой под справкой она стоила 37 точек высоты.
+
+        В подвале — ноль: строка там уже есть, и «обновлено» с «проверено»
+        врозь всё равно читаются как разные вещи.
+        """
+        html = render(copy.deepcopy(REAL))
+        foot = re.search(r'<footer class="colophon">(.*?)</footer>', html, re.S).group(1)
+        # Разряды и даты на этой странице разведены неразрывными пробелами —
+        # сравниваем по словам, а не по тому, каким пробелом они разделены.
+        said = " ".join(foot.split())
+        self.assertIn("Справка внизу проверена", said)
+        self.assertIn("24 августа 2026", said)
+        self.assertNotIn('class="ref-checked"', html[:html.index("<footer")])
 
 
 if __name__ == "__main__":

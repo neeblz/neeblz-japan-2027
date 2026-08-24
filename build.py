@@ -32,6 +32,12 @@ DATA = HERE / "data" / "trip.json"
 # то, что она двигает, и то, чего ей двигать нельзя, — значит рано или поздно
 # перепутать, кто чей текст переписал.
 PLAN_DATA = HERE / "data" / "days-plan.json"
+# Справка внизу — виза, документы, такс-фри. Отдельный файл по той же причине,
+# что и план: другой хозяин и другая природа. В `trip.json` — её брони и её
+# деньги; здесь — внешние правила, которые никто из нас не назначает и которые
+# устаревают сами. У каждого пункта записано, откуда он взят, и страница обязана
+# это показать: см. `ref_item`.
+REF_DATA = HERE / "data" / "reference.json"
 SITE = HERE / "site"
 DIST = HERE / "dist"
 
@@ -136,6 +142,17 @@ def load_plan() -> list:
     полноты, а не странице. Наружу отсюда уходит один список дней.
     """
     return json.loads(PLAN_DATA.read_text(encoding="utf-8"))["days"]
+
+
+def load_reference() -> dict:
+    """Справка целиком: блоки и дата проверки.
+
+    Ключи с подчёркивания здесь — записки самим себе, как и в плане по дням.
+    Наружу уходит весь словарь: странице нужны и блоки, и `checked` — правила
+    меняются, а страница живёт месяцами, и цифра без даты через полгода
+    читается как сегодняшняя.
+    """
+    return json.loads(REF_DATA.read_text(encoding="utf-8"))
 
 
 # ─────────────────────────────────────────── проверки
@@ -413,6 +430,39 @@ def check(trip: dict, plan: list | None = None) -> list[str]:
                 f'и {linked} {plural(linked, "ссылка", "ссылки", "ссылок")} из `places`')
 
     said.append(f"броней {len(stays)}, ночей {len(nights)}, дней {(end - start).days + 1}")
+    return said
+
+
+def check_reference(ref: dict | None = None) -> list[str]:
+    """Пересчитать справку вслух: сколько фактов, сколько догадок, чьих.
+
+    Само правило «непроверенное не рисуется как факт» живёт не здесь, а в
+    `ref_item`: проверка, которую можно забыть позвать, и отсутствие проверки
+    выглядят снаружи одинаково, а рендер забыть нельзя. Здесь — счёт, который
+    печатается при сборке, чтобы догадка, тихо ставшая фактом, была видна в
+    выводе, а не только в тесте.
+
+    Заодно ловится обратное: раздел, где не подтверждено вообще ничего.
+    Три непроверенных пункта про визу — не оговорка на всякий случай, а
+    следствие того, что сайт посольства отвечает нашему серверу 403; день,
+    когда они молча станут фактами, обязан быть заметен.
+    """
+    ref = load_reference() if ref is None else ref
+    said, total = [], 0
+    for block in ref["blocks"]:
+        facts = sum(1 for i in block["items"] if i.get("verified") is True)
+        unsure = sum(1 for i in block["items"] if i.get("verified") is False)
+        mine = sum(1 for i in block["items"] if i.get("mine") is True)
+        if facts + unsure + mine != len(block["items"]):
+            raise Failed(f'справка, блок «{block["id"]}»: у пункта нет происхождения')
+        total += len(block["items"])
+        said.append(f'справка, {block["title"].lower()}: {facts} подтверждено, '
+                    f"{unsure} нет, {mine} от нас")
+    # Дата проверки — не украшение: правила меняются, а страница живёт
+    # месяцами, и цифра без даты через полгода читается как сегодняшняя.
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", ref.get("checked", "")):
+        raise Failed("у справки нет даты проверки")
+    said.append(f'справка: {total} пунктов, проверена {ref["checked"]}')
     return said
 
 
@@ -1427,6 +1477,136 @@ def more_block(trip: dict, stays: list, alerts: list, plan: list, all_legs: list
     )
 
 
+def ref_item(item: dict) -> str:
+    """Один пункт справки — и его происхождение, написанное на нём же.
+
+    Здесь и стоит вся защита от той ошибки, которой мы боимся: непроверенное,
+    нарисованное как факт. Она не проверяется отдельным инструментом, который
+    можно забыть позвать, — пункт без происхождения просто не рисуется, и
+    сборка падает на месте.
+
+    Три вида, и они выглядят по-разному нарочно:
+
+    * `verified: true` — подтверждено двумя независимыми источниками. Обычная
+      строка, без пометки: пометка на факте обесценила бы пометку на догадке.
+    * `verified: false` + `how` — **не подтверждено**, и это написано словом,
+      а рядом стоит `how`: что и когда спросить. Сайт посольства Японии в
+      Грузии отвечает нашему серверу 403 на все страницы, включая главную,
+      поэтому эти три пункта и взяты из вторичных источников.
+    * `mine: true` — наше соображение, а не внешнее правило. Тоже помечено, и
+      другим словом: спутать «так устроено» и «мы так думаем» дороже всего.
+
+    Пункт, у которого происхождения нет или их два, — это пункт, про который
+    мы сами не знаем, факт он или нет. Такой не показывается вовсе.
+    """
+    kinds = [
+        bool(item.get("verified") is True),
+        bool(item.get("verified") is False),
+        bool(item.get("mine") is True),
+    ]
+    if sum(kinds) != 1:
+        raise Failed(f'пункт справки без ясного происхождения: «{item["text"][:60]}…»')
+
+    # Ссылка ставится только та, что открыта своими руками; выдуманного адреса
+    # здесь не появится, как и у мест в карточках городов.
+    link = ""
+    if item.get("link"):
+        link = (f'<a class="btn" href="{e(item["link"])}" target="_blank"'
+                f' rel="noreferrer noopener">{e(item.get("link_label") or item["link"])}</a>')
+
+    if item.get("mine") is True:
+        return (f'<li class="think"><span class="mark">наше соображение</span>'
+                f'<span class="say">{e(item["text"])}</span>{link}</li>')
+    if item.get("verified") is False:
+        how = (item.get("how") or "").strip()
+        if not how:
+            raise Failed(f'непроверенный пункт молчит, что с ним делать: «{item["text"][:60]}…»')
+        return (f'<li class="unsure"><span class="mark">не подтверждено</span>'
+                f'<span class="say">{e(item["text"])}</span>'
+                f'<span class="how">{e(how)}</span>{link}</li>')
+    return f'<li class="fact"><span class="say">{e(item["text"])}</span>{link}</li>'
+
+
+def ref_items(block: dict) -> str:
+    return f'<ul class="facts">{"".join(ref_item(i) for i in block["items"])}</ul>'
+
+
+def reference() -> str:
+    """Справка внизу: виза, документы до вылета, такс-фри.
+
+    Ни 24 августа: «внизу мне нужна справочная информация по визе для граждан
+    грузии, как и когда оформлять, по еще каким-то документам, которые нужно
+    оформить до. как легко оформлять дьюти фри покупки и что-то еще полезное».
+    «Внизу» здесь буквально: отдельным разделом в конце, а не строчкой внутри
+    «Решить и забронировать» — это не пункт её списка, а внешние правила.
+
+    Три блока стоят по-разному, и разница не оформительская.
+
+    **Виза не под стрелкой.** Это самый срочный срок на всей странице: вылет
+    4 января, подача только очно, а конец декабря у японских учреждений
+    нерабочий. Свёрнутая наравне с такс-фри, она читалась бы как «ещё одна
+    справка», и открыть её можно было бы в феврале. Поэтому у визы вид
+    заметки о наложении ночей — рамка, которой на этой странице помечено
+    дорогое, — и снаружи сказано то, из-за чего надо шевелиться. Под стрелкой
+    остаются подробности, а не повод.
+
+    **У такс-фри повод написан в самом заголовке.** С 1 ноября 2026 система
+    перевернулась: раньше налог не брали в магазине, теперь платишь и
+    возвращаешь в аэропорту. Её поездка — январь 2027, то есть уже по новым
+    правилам, и человек, который помнит старые, ничего открывать не станет —
+    он же «знает, как это работает». Поэтому «работает наоборот» стоит в
+    строке, которую видно не открывая.
+
+    Заголовок «до вылета» намеренно тихий: там нет ни срока, ни ловушки.
+    """
+    ref = load_reference()
+    blocks = {b["id"]: b for b in ref["blocks"]}
+    visa, docs, tax = blocks["visa"], blocks["documents"], blocks["taxfree"]
+
+    # Счёт непроверенного — в подписи свёртки. Свёрнутое должно говорить, что
+    # внутри, само; а здесь оно должно говорить ещё и то, чему внутри верить
+    # нельзя, — иначе «не подтверждено» увидит только тот, кто открыл.
+    unsure = sum(1 for i in visa["items"] if i.get("verified") is False)
+    tag = (f'{len(visa["items"])} {plural(len(visa["items"]), "пункт", "пункта", "пунктов")}'
+           f' · {unsure} без подтверждения' if unsure else
+           f'{len(visa["items"])} {plural(len(visa["items"]), "пункт", "пункта", "пунктов")}')
+
+    warn = visa.get("warning")
+    think = ""
+    if warn:
+        think = (f'<p class="think"><span class="mark">наше соображение</span>'
+                 f'{e(warn["text"])}</p>')
+
+    def fold(block: dict, cls: str, note: str) -> str:
+        lead = f'<p class="lead">{e(block["lead"])}</p>' if block.get("lead") else ""
+        # Заголовок — в своём элементе, а не голым текстом рядом с плюсом.
+        # Голый текст внутри флексового `summary` становится безымянной
+        # ячейкой, и на телефоне длинный заголовок такс-фри уносило целиком на
+        # следующую строку, оставляя плюс стоять в одиночестве.
+        return (f'<details class="more ref-row {cls}" data-ref="{e(block["id"])}">'
+                f'<summary><span class="ttl">{e(block["title"])}</span>'
+                f'<span class="tag" data-ref-tag="{e(block["id"])}">{e(note)}</span>'
+                f'</summary><div class="ref-body">{lead}{ref_items(block)}</div></details>')
+
+    return f"""
+<section class="ref" id="ref">
+  <div class="visa">
+    <div class="says">
+      <p class="siren">самое срочное</p>
+      <h3>{e(visa["title"])}</h3>
+      <p class="lead">{e(visa["lead"])}</p>
+    </div>
+    {think}
+    <details class="visa-more" data-ref="visa">
+      <summary>Что нужно знать<span class="tag" data-ref-tag="visa">{e(tag)}</span></summary>
+      {ref_items(visa)}
+    </details>
+  </div>
+  {fold(docs, "quietly", "Visit Japan Web, страховка")}
+  {fold(tax, "flip", "платишь в магазине, возвращаешь в аэропорту")}
+</section>"""
+
+
 def island(trip: dict, stays: list, all_legs: list, plan: list) -> str:
     """Всё, что странице нужно знать про уже посчитанное, — одним куском.
 
@@ -1481,9 +1661,20 @@ def island(trip: dict, stays: list, all_legs: list, plan: list) -> str:
 
 
 def colophon(trip: dict) -> str:
+    """Кто что вносит — и по состоянию на когда.
+
+    Дата проверки справки стоит здесь, а не под самой справкой, по двум
+    причинам сразу. Смысловая: «обновлено» и «проверено» — оба про возраст
+    страницы, и врозь они читаются как разные вещи. Считанная: отдельной
+    строкой под справкой она стоила 37 точек высоты, а здесь встала в уже
+    потраченную строку подвала и не стоит ничего.
+    """
+    ref = load_reference()
     return f"""
 <footer class="colophon">
   <span>Обновлено {day_month(trip["trip"]["updated"])} {d(trip["trip"]["updated"]).year}.</span>
+  <span class="ref-checked">Справка внизу проверена
+  {day_month(ref["checked"])} {d(ref["checked"]).year}.</span>
   <span>Места, брони и пункты списка вписывай сама — они сохраняются здесь же
   и никуда не денутся. Отели, даты и сроки отмены вносит Блэйз.</span>
 </footer>"""
@@ -2108,6 +2299,85 @@ a.nm{color:var(--bronze); text-decoration:underline; text-decoration-color:var(-
 .always li{padding:3px 0 3px 17px; position:relative}
 .always li::before{content:"✓"; position:absolute; left:0; color:var(--moss); font-size:11px}
 
+/* ── справка внизу: виза, документы, такс-фри
+   ────────────────────────────────────────────────────────────────────
+   Единственный раздел страницы, где написанное не про её поездку, а про
+   внешние правила. Отсюда и вся его особенность: у каждой строки видно,
+   откуда она взялась. Три вида, три разных знака, и ни один из них не
+   держится на одном цвете — цвет читается не у всех и не на всяком экране.
+
+   * факт — просто строка;
+   * не подтверждено — пунктирная рамка, красная пометка словом и рядом то,
+     что с этим делать («уточнить при записи»);
+   * наше соображение — сплошная тонкая линия слева и золотая пометка.
+
+   Прозрачности здесь нет ни в одном правиле: `opacity` съедает контраст
+   молча, а половина этого раздела — как раз мелкие пометки, которым просесть
+   легче всего. */
+.ref{margin-top:20px}
+/* Виза стоит в той же рамке, что заметка про ночь с двумя бронями. На этой
+   странице такая рамка значит одно: здесь дорого ошибиться. Виза — самый
+   срочный срок из всех (вылет 4 января, подача только очно, конец декабря
+   у японских учреждений нерабочий), поэтому она и не под стрелкой. */
+.ref .visa{border:1.5px solid var(--fire); background:var(--sand); border-radius:12px;
+  padding:11px 16px 9px; display:flex; flex-wrap:wrap; gap:4px 26px; align-items:baseline}
+.ref .visa .says{flex:none; max-width:430px}
+.ref .siren{margin:0; font-size:10px; letter-spacing:.2em; text-transform:uppercase;
+  color:var(--fire); font-weight:700}
+.ref .siren::before{content:"●"; margin-right:7px; font-size:8px; vertical-align:2px}
+.ref .visa h3{font-size:17px; margin-top:3px; color:var(--ink)}
+.ref .visa .lead{margin:2px 0 0; font-size:13.5px; color:var(--deep)}
+/* Соображение, а не правило. Мысль, выданная за факт, — самая дорогая ошибка
+   этого раздела, поэтому она помечена и снаружи, и внутри списка, одним и тем
+   же словом: «наше соображение». */
+.ref .think{margin:0; font-size:12.5px; color:var(--deep); line-height:1.45;
+  flex:1 1 300px; min-width:260px; border-left:2px solid var(--gold); padding-left:11px}
+.ref .think .mark{display:block; font-size:9.5px; letter-spacing:.12em;
+  text-transform:uppercase; color:var(--gold); font-weight:700}
+.ref .visa-more{flex:none; margin-left:auto}
+.ref .visa-more > summary{cursor:pointer; list-style:none; display:flex; align-items:center;
+  gap:9px; min-height:30px; font-size:11.5px; letter-spacing:.1em; text-transform:uppercase;
+  color:var(--deep); font-weight:700; white-space:nowrap}
+.ref .visa-more > summary::-webkit-details-marker{display:none}
+.ref .visa-more > summary::before{content:"+"; font-size:15px; color:var(--fire); width:11px}
+.ref .visa-more[open] > summary::before{content:"–"}
+.ref .visa-more[open]{flex:1 1 100%; margin-left:0}
+.ref .visa-more .facts{margin-top:4px}
+
+/* Две оставшиеся — рядовыми свёртками, тем же видом, что списки и багаж выше:
+   это раздел для чтения, и своя форма ему не нужна. Заголовок такс-фри
+   длиннее прочих нарочно — «работает наоборот» обязано быть видно, не
+   открывая. Кто помнит старые правила, ничего открывать не станет. */
+.ref .ref-row{border-bottom:1px solid var(--hair)}
+.ref .ref-row:first-of-type{border-top:1px solid var(--hair); margin-top:10px}
+.ref .flip > summary{color:var(--bronze)}
+.ref .flip > summary::before{color:var(--fire)}
+.ref .flip > summary .tag{color:var(--fire)}
+.ref .ref-body{padding:0 0 16px}
+.ref .ref-body > .lead{margin:0 0 10px; font-size:13px; color:var(--deep); max-width:760px}
+
+.ref .facts{list-style:none; margin:0; padding:0; display:grid; gap:7px;
+  grid-template-columns:repeat(auto-fit,minmax(300px,1fr)); align-items:start}
+.ref .facts li{font-size:13px; line-height:1.45; color:var(--ink); padding:5px 0 5px 15px;
+  border-left:2px solid var(--hair); max-width:600px}
+.ref .facts .say{display:block}
+.ref .facts .mark{display:block; font-size:9.5px; letter-spacing:.12em;
+  text-transform:uppercase; font-weight:700; margin-bottom:2px}
+/* Непроверенное отличается от факта не оттенком, а рамкой и словом: пунктир —
+   тот же язык, что у пустых полей и у строки «чего в итоге нет», и значит на
+   этой странице ровно это — «здесь ещё не всё». */
+.ref .unsure{border-left:2px dashed var(--fire); background:rgba(168,55,39,.05);
+  border-radius:0 6px 6px 0; padding-right:10px}
+.ref .unsure .mark{color:var(--fire)}
+/* Что именно спросить в посольстве — рядом с самим пунктом, а не сноской
+   внизу: сноску читают после того, как поверили. */
+.ref .unsure .how{display:block; margin-top:3px; font-size:11px; color:var(--deep);
+  font-style:italic}
+.ref .unsure .how::before{content:"→"; margin-right:6px; font-style:normal; color:var(--fire)}
+.ref .think-item,.ref .facts .think{border-left:2px solid var(--gold)}
+.ref .facts .think .mark{color:var(--gold)}
+.ref .facts .btn{display:inline-block; margin-top:4px; font-size:12px; color:var(--bronze)}
+
 .colophon{margin-top:22px; padding-top:14px; border-top:1px solid var(--hair);
   font-size:11px; color:var(--quiet); display:flex; flex-wrap:wrap; gap:4px 10px}
 
@@ -2156,6 +2426,28 @@ a.nm{color:var(--bronze); text-decoration:underline; text-decoration-color:var(-
   .thread .paidbar span{position:static; white-space:normal; display:block}
   .alert{display:block}
   .alert .facts{display:block; margin-top:8px}
+  /* Справка на телефоне встаёт столбиком: у визы три части (что это, наше
+     соображение, стрелка на подробности), и в 390 точек они рядом не живут. */
+  .ref .visa{display:block}
+  .ref .think{margin-top:9px; min-width:0}
+  .ref .visa-more{margin-left:0; margin-top:6px}
+  /* Подпись свёртки — на свою строку, под заголовок. Рядом в 390 точек они
+     встают двумя узкими столбцами, и оба переносятся посередине слова:
+     «ЧТО НУЖНО | 7 ПУНКТОВ · 3 БЕЗ» читается как одна фраза, которой нет.
+     Отступ равен ширине плюса с зазором — подпись висит под своим словом. */
+  .ref .visa-more > summary{min-height:44px; white-space:normal; flex-wrap:wrap}
+  /* Отступ внутренний, а не внешний: ячейка шириной в целую строку плюс
+     внешние 22 точки — это строка шириной 100% + 22, и страница уезжает
+     вбок ровно на них. Внутренний отступ при `border-box` живёт внутри. */
+  .ref .visa-more > summary .tag{flex:1 0 100%; padding-left:20px}
+  .ref .ref-row > summary{flex-wrap:wrap}
+  /* Основа 0, а не auto: перенос по строкам считается по желаемой ширине
+     ячейки, а не по ужатой. С `auto` заголовок такс-фри просит 600 точек,
+     не влезает рядом с плюсом и уезжает на строку ниже целиком — сжиматься
+     он начал бы уже потом, когда переносить поздно. */
+  .ref .ref-row > summary .ttl{flex:1 1 0; min-width:0}
+  .ref .ref-row > summary .tag{flex:1 0 100%; padding-left:22px}
+  .ref .facts{grid-template-columns:1fr}
   .unknown{margin-left:0}
   .blank{flex:1 1 100px; width:auto}
   /* Пальцем попадать: карта, телефон, все свёртки и всё, чем она правит
@@ -3378,6 +3670,7 @@ def render(trip: dict, plan: list | None = None) -> str:
   {adder(trip, all_legs)}
   {ledger(trip, stays, all_legs)}
   {more_block(trip, stays, alerts, plan, all_legs)}
+  {reference()}
   {colophon(trip)}
 </div>
 {island(trip, stays, all_legs, plan)}
@@ -3470,7 +3763,7 @@ def main() -> int:
     load_fx(trip)
 
     try:
-        said = check(trip, plan)
+        said = check(trip, plan) + check_reference()
     except Failed as err:
         print(f"✗ проверка не прошла: {err}", file=sys.stderr)
         return 1
