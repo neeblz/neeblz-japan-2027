@@ -1032,8 +1032,30 @@ class TheDaysAreHers(unittest.TestCase):
 
     def test_the_handles_appear_only_when_storage_answers(self):
         """Кнопка, которой некуда нажать, — обещание, которое не сдержать."""
-        for gone in ("убрать", "правка", "+ пункт", "перенести в день"):
+        for gone in ("убрать", "правка", "+ пункт"):
             self.assertNotIn(gone, self.days, f"«{gone}» нарисовано до ответа хранилища")
+
+    def test_the_day_picker_is_gone_from_the_page_and_from_the_script(self):
+        """Ни 2026-08-24: «поэтому я попросила сделать дни в два столбца, а не
+        колбасой вниз».
+
+        Список «в день →» был обходом длинной колбасы: с 6 января на 17-е
+        мышью было не дотянуться. Столбцы этот обход отменили, и список убран
+        целиком — из разметки, из скрипта и из данных страницы.
+
+        Проверяются все три конца, потому что вернуться он может любым: узел в
+        `<li>`, `select` в скрипте дней и подпись дня в `japan-data`, чьим
+        единственным читателем список и был.
+        """
+        self.assertNotIn("перенести в день", self.html)
+        script = re.search(r"var box = document\.getElementById\(\"japan-data\"\);.*",
+                           self.html, re.S).group(0)
+        self.assertNotIn("select", script, "список дат вернулся в скрипт дней")
+        days = json.loads(
+            re.search(r'<script type="application/json" id="japan-data">(.*?)</script>',
+                      self.html, re.S).group(1))["days"]
+        self.assertEqual([sorted(x) for x in days], [["date"]] * 16,
+                         "подпись дня читал только список дат — без него это мёртвые данные")
 
     def test_the_clock_is_gone_from_the_page_but_not_from_the_data(self):
         """Ни 2026-08-24: «часы убей, они ломаются при перетаскивании и в целом

@@ -1424,6 +1424,13 @@ def by_day(trip: dict, stays: list, alerts: list, plan: list, all_legs: list) ->
     открывает браузер, потому что «ближайший» стареет каждые сутки, а страница
     собирается редко.
 
+    **Свёрнутый день — мишень для броска, и это единственный дальний перенос.**
+    Ни 2026-08-24, про список дат у каждой строки: «поэтому я попросила сделать
+    дни в два столбца, а не колбасой вниз». Два столбца держат все шестнадцать
+    свёрнутых дней на одном экране, и 6 января с 17-м видны одновременно —
+    значит утащить одно к другому можно мышью, а список дат был обходом
+    проблемы, которой нет.
+
     Ручек (двинуть, перенести, дописать, убрать) в собранной разметке нет
     нарочно: все они ходят в хранилище, и нарисованная кнопка, которой некуда
     нажать, — обещание, которого страница не может сдержать.
@@ -1478,11 +1485,11 @@ def by_day(trip: dict, stays: list, alerts: list, plan: list, all_legs: list) ->
 
     return f"""
 <div id="days">
-  <p class="sec-note">Пункты можно таскать мышью — внутри дня и между открытыми
-     днями, — а через «в день» переносить куда угодно, хоть с 6 января на 17-е.
-     Ручки появляются, когда наводишь на строку. Порядок хранится на сайте, а
-     не в телефоне, и пересборка страницы его не трогает. Каждое место в
-     названии ведёт на свою карту.</p>
+  <p class="sec-note">Пункты можно таскать мышью — внутри дня, между открытыми
+     днями и на заголовок свёрнутого дня: брошенный на заголовок встаёт в конец
+     того дня. Ручки появляются, когда наводишь на строку. Порядок хранится на
+     сайте, а не в телефоне, и пересборка страницы его не трогает. Каждое место
+     в названии ведёт на свою карту.</p>
   <p class="sec-note daysays" data-days-says role="status" hidden></p>
   <button type="button" class="foldall" data-fold-all aria-expanded="false">развернуть все дни</button>
   <div class="plan" data-plan data-total="{total}">{"".join(blocks)}</div>
@@ -1760,17 +1767,13 @@ def island(trip: dict, stays: list, all_legs: list, plan: list) -> str:
             for leg in all_legs
         ],
         "groups": [g["group"] for g in trip["todo"]],
-        # Дни для списка «перенести в день →» и для формы «+ пункт». Подпись
-        # готовится тут же: собирать «6 января, ср» в браузере значило бы
-        # завести второй русский календарь рядом с первым.
-        "days": [
-            {
-                "date": x["date"],
-                "label": f'{d(x["date"]).day} {MONTHS[d(x["date"]).month - 1]}, '
-                         f'{WEEKDAYS[d(x["date"]).weekday()]} — {x["title"]}',
-            }
-            for x in plan
-        ],
+        # Дни — порядок расстановки и то, какой из них раскрыть первым. Подписи
+        # («6 января, ср — …») тут больше нет: её единственным читателем был
+        # список «перенести в день →», а его Ни убрала 24 августа — «поэтому я
+        # попросила сделать дни в два столбца, а не колбасой вниз». Данные,
+        # которые никто не читает, — это второй русский календарь, ждущий
+        # случая разойтись с первым.
+        "days": [{"date": x["date"]} for x in plan],
     }
     text = json.dumps(payload, ensure_ascii=False).replace("<", "\\u003c")
     return f'<script type="application/json" id="japan-data">{text}</script>'
@@ -2331,6 +2334,13 @@ input:checked ~ .txt{color:var(--deep); text-decoration:line-through}
   border:1px solid var(--hair); border-radius:20px; padding:2px 7px}
 .day.move .dt b{color:var(--gold)}
 .day.clash .dt b,.day.noted .dt b{color:var(--fire)}
+/* Заголовок дня под грузом. С 24 августа это единственный способ унести пункт
+   далеко — список дат Ни убрала, — и мишень обязана называть себя, пока над
+   ней держат: без отклика бросок вслепую отличается от промаха только тем, что
+   потом видно в дне. Тот же язык, что у открытого дня (`.items.over`): песок и
+   пунктир, а не новый цвет. */
+.day > summary.over{background:var(--sand); border-radius:6px;
+  outline:1px dashed var(--rule)}
 .dbody{padding:2px 0 12px 41px}
 .dnote{margin:0 0 8px; font-size:12px; color:var(--deep); font-style:italic}
 .items{list-style:none; margin:0; padding:0}
@@ -2371,12 +2381,11 @@ a.mk.bk{border-color:var(--gold)}
 .grip{flex:none; cursor:grab; color:var(--rule); font-size:12px; line-height:1;
   padding:0 1px; user-select:none}
 .acts{flex:none; display:flex; align-items:center; gap:4px; margin-left:auto}
-.acts button,.acts select{font-family:inherit; font-size:11px; color:var(--quiet);
+.acts button{font-family:inherit; font-size:11px; color:var(--quiet);
   background:none; border:1px solid var(--hair); border-radius:6px; padding:3px 7px;
   cursor:pointer; min-height:26px}
 .acts button:hover{color:var(--ink); border-color:var(--rule)}
 .acts .rm{font-size:12px; line-height:1; padding:3px 7px}
-.acts select{max-width:104px}
 .addday{margin-top:9px; background:none; border:1px dashed var(--rule); border-radius:8px;
   padding:7px 12px; font-size:12px; color:var(--quiet); font-family:inherit; cursor:pointer;
   min-height:32px}
@@ -2387,9 +2396,9 @@ a.mk.bk{border-color:var(--gold)}
 /* ── ручки: не в глаза, но в досягаемости
 
    Ни 2026-08-24: «подпись к блоку и все кнопки убивай, они только мусорность
-   создают и место занимают». Убрать их совсем нельзя — «в день →» это
-   единственный способ унести пункт с 6 января на 17-е, — поэтому они уходят
-   из спокойного вида, а не со страницы.
+   создают и место занимают». Осталось две — «правка» и крестик, — и обе уходят
+   из спокойного вида, а не со страницы. Списка дат тут больше нет вовсе:
+   дальний перенос делается броском на заголовок свёрнутого дня.
 
    Спрятано **прозрачностью**, а не `display:none` или `visibility:hidden`:
    оба выкидывают элемент из обхода клавиатурой, и «спрятано от мыши» молча
@@ -2638,15 +2647,16 @@ a.mk.bk{border-color:var(--gold)}
   .pane .f.wide{grid-column:span 1}
   .stayfine > summary{min-height:44px; align-content:center}
   .more > summary{min-height:44px; padding:13px 2px}
-  /* Дни на телефоне: свёртки и ручки — под палец. Таскать мышью тут нечем,
-     и это не потеря: переносит она с компьютера, а «в день →» работает
-     одинаково везде. */
+  /* Дни на телефоне: свёртки и ручки — под палец. Переставлять пункты тут
+     нечем совсем: перетаскивание пальцем браузер не отдаёт, а список дат
+     Ни убрала 24 августа. Правка, «+ пункт» и крестик работают; порядок она
+     собирает с компьютера, где два столбца держат все дни на одном экране. */
   .run > summary,.day > summary{min-height:44px; padding:11px 2px}
   .rdays{padding-left:4px}
   .dbody{padding-left:14px}
   .it{flex-wrap:wrap}
   .acts{margin-left:0; flex:1 1 100%; flex-wrap:wrap}
-  .acts button,.acts select{min-height:36px; display:inline-flex; align-items:center}
+  .acts button{min-height:36px; display:inline-flex; align-items:center}
   .grip{display:none}
   .addday,.foldall{min-height:36px}
   .itemform{grid-template-columns:1fr}
@@ -3296,9 +3306,17 @@ DAYS_JS = """
      расстановка не доехала, раздел остаётся тем, что собрано: планом из файла
      со ссылками, и строкой о том, почему он такой.
 
-     **Ручки заводятся на день при первом открытии.** Шестнадцать списков дат
-     по числу дней на каждый из сотни пунктов — это полторы тысячи узлов,
-     созданных ради дня, в который она, может, и не заглянет. */
+     **Ручки заводятся на день при первом открытии.** Кнопки, ручка для мыши и
+     `draggable` на каждый из сотни пунктов — это работа, проделанная ради дня,
+     в который она, может, и не заглянет.
+
+     **Между днями пункт ездит только мышью.** Список дат у каждой строки убран
+     24 августа — её слово: «поэтому я попросила сделать дни в два столбца, а
+     не колбасой вниз». Дальний перенос — бросок на заголовок свёрнутого дня;
+     свёрнутые дни в два столбца помещаются на один экран, и целиться есть во
+     что. Клавиатурой пункт между днями больше не переносится: список был
+     единственным таким способом, а у перетаскивания клавиатурной пары нет.
+     Правка, «+ пункт» и крестик с клавиатуры работают по-прежнему. */
 
   var box = document.getElementById("japan-data");
   var plan = document.querySelector("[data-plan]");
@@ -3501,11 +3519,6 @@ DAYS_JS = """
         paintItem(li, mine || merged(id));
         list.appendChild(li);             /* appendChild переносит, а не копирует */
         placed[id] = true;
-        /* Список дат у переехавшего пункта обязан показывать день, в котором
-           он теперь лежит: иначе он предлагает «перенести» туда, где пункт и
-           так стоит, а следующий перенос считается от неверного места. */
-        var pick = li.querySelector(".acts select");
-        if (pick) pick.value = day.date;
       });
       /* Ручки заводятся только в уже открытых днях: дописанный пункт обязан
          иметь их сразу, а закрытый день по-прежнему не платит за то, во что
@@ -3563,29 +3576,14 @@ DAYS_JS = """
     }).catch(fail);
   }
 
-  /* ── ручки: надёжные сначала */
+  /* ── ручки: правка, крестик и сама строка как груз */
 
   function dayOf(li){
     var list = li.closest("[data-day-items]");
     return list ? list.getAttribute("data-day-items") : "";
   }
 
-  var picker = null;
-  function daySelect(){
-    if (!picker) {
-      picker = document.createElement("select");
-      picker.setAttribute("aria-label", "перенести в день");
-      DAYS.forEach(function(day){
-        var option = document.createElement("option");
-        option.value = day.date;
-        option.textContent = day.label;
-        picker.appendChild(option);
-      });
-    }
-    return picker.cloneNode(true);
-  }
-
-  function wireItem(li, date){
+  function wireItem(li){
     if (li.getAttribute("data-wired") === "yes") return;
     li.setAttribute("data-wired", "yes");
 
@@ -3595,14 +3593,6 @@ DAYS_JS = """
     li.setAttribute("draggable", "true");
 
     var acts = el("span", "acts");
-
-    /* Список дат — способ, который работает всегда. Перетащить с 6 января на
-       17-е нельзя физически: между ними два экрана прокрутки. */
-    var to = daySelect();
-    to.value = date;
-    to.addEventListener("change", function(){
-      send("PATCH", { id: li.getAttribute("data-item"), to: to.value });
-    });
 
     var edit = el("button", "ed", "правка");
     edit.type = "button";
@@ -3621,7 +3611,6 @@ DAYS_JS = """
       send("DELETE", { id: li.getAttribute("data-item") });
     });
 
-    acts.appendChild(to);
     acts.appendChild(edit);
     acts.appendChild(drop);
     li.appendChild(acts);
@@ -3683,8 +3672,12 @@ DAYS_JS = """
     if (list) {
       send("PATCH", { id: id, to: list.getAttribute("data-day-items"), at: spotIn(list, event.clientY) });
     } else {
-      /* Брошено на заголовок свёрнутого дня — значит «в конец этого дня»:
-         внутрь закрытого дня прицелиться нечем. */
+      /* Брошено на заголовок дня — значит «в конец этого дня»: внутрь
+         закрытого дня прицелиться нечем. С 24 августа это и есть дальний
+         перенос: список дат убран, а два столбца держат все шестнадцать
+         свёрнутых дней на одном экране. День открывается сразу после броска —
+         иначе пункт уезжает в закрытую свёртку, и «доехал ли» приходится
+         проверять нажатием. */
       var day = head.closest(".day");
       send("PATCH", { id: id, to: day.getAttribute("data-day") });
       day.open = true;
@@ -3801,7 +3794,7 @@ DAYS_JS = """
        пункт приезжал без кнопок и оживал только перезагрузкой. */
     var date = day.getAttribute("data-day");
     Array.prototype.forEach.call(day.querySelectorAll(".it"), function(li){
-      wireItem(li, date);
+      wireItem(li);
     });
     if (day.getAttribute("data-wired") === "yes") return;
     day.setAttribute("data-wired", "yes");

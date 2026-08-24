@@ -268,13 +268,24 @@ with sync_playwright() as pw:
     }""")
     want(seen == "1", f"под мышью ручки появились (прозрачность {seen})")
 
-    # Клавиатура: `Tab` доходит до списка дат внутри строки, и вместе с
-    # фокусом обязана появиться вся тройка ручек.
+    # Список дат «в день →» убран целиком — Ни 2026-08-24: «поэтому я
+    # попросила сделать дни в два столбца, а не колбасой вниз». Проверяется
+    # здесь, а не только в разметке: хранилище ответило, ручки заведены, и
+    # если список вернётся, то именно на этом шаге.
+    #
+    # Вместе с ним ушёл и единственный способ перенести пункт в другой день с
+    # клавиатуры: у перетаскивания клавиатурной пары нет. Это записано и в
+    # README, и в отчёте — молча такое терять нельзя.
+    want(page.locator("#days .acts select").count() == 0,
+         "списка дат в строке больше нет")
+
+    # Клавиатура: `Tab` доходит до «правки» внутри строки, и вместе с фокусом
+    # обязаны появиться обе оставшиеся ручки.
     keyed = page.evaluate("""() => {
       const li = document.querySelector('[data-day-items="2027-01-06"] > li');
-      const pick = li.querySelector('.acts select');
-      pick.focus();
-      return { got: document.activeElement === pick,
+      const edit = li.querySelector('.acts .ed');
+      edit.focus();
+      return { got: document.activeElement === edit,
                shown: getComputedStyle(li.querySelector('.acts')).opacity,
                cross: li.querySelector('.acts .rm').getAttribute('aria-label') };
     }""")
@@ -312,16 +323,89 @@ with sync_playwright() as pw:
     want(moved[:2] == ["d06-2", "d06-1"],
          f"пункт съехал на строку вниз и остался там после перезагрузки: {moved[:3]}")
 
-    # 2. Перенос в другой день списком дат — тот способ, который работает
-    #    всегда: перетащить с 6 января на 17-е нельзя, между ними два экрана.
-    page.locator('[data-item="d06-1"] .acts select').select_option("2027-01-17")
-    page.wait_for_timeout(800)
+    # 2. Дальний перенос — бросок на заголовок свёрнутого дня.
+    #
+    # Единственный способ унести пункт с 6 января на 17-е с тех пор, как список
+    # дат убран. Проверяется он так, как она им пользуется: все дни свёрнуты
+    # (в два столбца они помещаются на экран целиком), открыт только тот, из
+    # которого тащим, — а цель закрыта, и целиться приходится в заголовок.
+    def fold_days():
+        page.evaluate("""() => document.querySelectorAll('#days details.day')
+            .forEach(d => { d.open = false; })""")
+        page.wait_for_timeout(120)
+
+    def drop_on_head(item, date):
+        """Бросок груза на заголовок дня. Возвращает, подсветилась ли мишень.
+
+        Мышь ведётся вручную, а не через `drag_and_drop`, и страница сначала
+        ставится так, чтобы груз и заголовок были на экране разом. Обе меры
+        измеренные, а не осторожность:
+
+        - `drag_and_drop` доводит мишень до видимости уже **посреди**
+          перетаскивания; прокрутка его рвёт, и первый прогон упал именно так —
+          груз уехал за верхний край, `dragstart` не случился вовсе.
+        - прокрутка идёт `behavior:"instant"`, потому что у страницы включён
+          `scroll-behavior:smooth`. Обычный `scrollBy` продолжает ехать после
+          того, как мы сняли координаты, — курсор приезжает туда, где мишени
+          уже нет. Так пункт трижды попал в 19 января вместо 17-го, и выглядело
+          это как «бросок не работает», хотя мимо целился тест.
+
+        Условие «оба на экране» — не поблажка проверке, а её же условие: бросить
+        можно только в то, что видно вместе с грузом. Держится оно на том, что
+        свёрнутые дни в два столбца помещаются на экран (меряется в
+        `test/wide.py`).
+        """
+        head = f'#days details.day[data-day="{date}"] > summary'
+        page.evaluate("""(sel) => {
+          const src = document.querySelector(sel[0]).getBoundingClientRect();
+          const dst = document.querySelector(sel[1]).getBoundingClientRect();
+          window.scrollBy({ top: (src.top + dst.bottom) / 2 - window.innerHeight / 2,
+                            behavior: "instant" });
+        }""", [f'[data-item="{item}"]', head])
+        page.wait_for_timeout(200)
+        src = page.locator(f'[data-item="{item}"]').bounding_box()
+        dst = page.locator(head).bounding_box()
+        page.mouse.move(src["x"] + 30, src["y"] + src["height"] / 2)
+        page.mouse.down()
+        page.mouse.move(src["x"] + 60, src["y"] + src["height"] / 2 + 15, steps=5)
+        page.mouse.move(dst["x"] + 120, dst["y"] + dst["height"] / 2, steps=20)
+        page.mouse.move(dst["x"] + 124, dst["y"] + dst["height"] / 2, steps=3)
+        page.wait_for_timeout(150)
+        lit = page.locator(head + ".over").count() == 1
+        page.mouse.up()
+        page.wait_for_timeout(900)
+        return lit
+
+    fold_days()
+    page.locator('#days details.day[data-day="2027-01-06"] > summary').click()
+    page.wait_for_timeout(200)
+    shut = page.evaluate("""() => document.querySelector(
+        '#days details.day[data-day="2027-01-17"]').open""")
+    want(shut is False, "17 января свёрнуто — мишень это заголовок, а не список")
+
+    # Подсветка проверяется вместе с самим броском: мишень без отклика — это
+    # бросок вслепую, а он от промаха отличается только тем, что видно потом.
+    want(drop_on_head("d06-1", "2027-01-17"),
+         "заголовок свёрнутого дня отозвался под грузом")
     want(page.locator('[data-day-items="2027-01-06"] [data-item="d06-1"]').count() == 0,
          "пункт ушёл из старого дня")
     want(page.locator('[data-day-items="2027-01-17"] [data-item="d06-1"]').count() == 1,
-         "и приехал в 17 января")
+         "и приехал в 17 января броском на свёрнутый заголовок")
+    # День открывается сам: иначе пункт уезжает в закрытую свёртку, и «доехал
+    # ли» приходится проверять нажатием.
+    want(page.evaluate("""() => document.querySelector(
+        '#days details.day[data-day="2027-01-17"]').open""") is True,
+         "и день сам открылся, показав, куда пункт лёг")
     counted = page.locator('#days details.day[data-day="2027-01-17"] [data-count]').inner_text()
     want(counted == "10", f"счётчик дня пересчитался ({counted})")
+
+    # И это переживает перезагрузку — то есть уехало в хранилище, а не только
+    # на экран.
+    page.reload(wait_until="load")
+    page.wait_for_timeout(900)
+    unfold()
+    want(page.locator('[data-day-items="2027-01-17"] [data-item="d06-1"]').count() == 1,
+         "брошенный на свёрнутый день пункт остался там после перезагрузки")
 
     # 3. Перетаскивание — приятное поверх надёжного.
     #
@@ -413,10 +497,13 @@ with sync_playwright() as pw:
         rows = rows_of(date)
         return rows.index(item) == rows.index(target) - 1
 
-    # Перенос списком дат кладёт пункт в конец дня — обратно наверх его
-    # поднимает то же перетаскивание, которым он оттуда и уехал.
-    page.locator('[data-item="d06-1"] .acts select').select_option("2027-01-06")
-    page.wait_for_timeout(700)
+    # Обратно — тем же броском на заголовок: он кладёт пункт в конец дня, и
+    # наверх его поднимает то же перетаскивание внутри дня.
+    fold_days()
+    page.locator('#days details.day[data-day="2027-01-17"] > summary').click()
+    page.wait_for_timeout(200)
+    drop_on_head("d06-1", "2027-01-06")
+    unfold()
     want(put_before("d06-1", "d06-2", "2027-01-06"), "пункт поднят обратно наверх дня")
     want(put_after("d17-9", "d17-8", "2027-01-17"),
          "перетащенный пункт возвращён в конец дня")
