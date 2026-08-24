@@ -21,7 +21,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from build import DATA, Failed, check, render  # noqa: E402
+from build import DATA, SITE, Failed, check, load_plan, render, write_plan  # noqa: E402
 
 REAL = json.loads(DATA.read_text(encoding="utf-8"))
 
@@ -284,8 +284,14 @@ class PageShowsIt(unittest.TestCase):
         self.assertIn(str(total), re.sub(r"\s+", "", check))
 
     def test_every_day_of_the_trip_is_listed(self):
-        """4 января — день вылета: поездка начинается им, а не прилётом."""
-        rows = re.findall(r'<div class="date">\s*<b>(\d+)</b>', self.html)
+        """4 января — день вылета: поездка начинается им, а не прилётом.
+
+        Разметка сменилась 24 августа: дни стали свёртками с пунктами внутри,
+        потому что Ни попросила тасовать пункты и переносить их из дня в день.
+        Проверяется то же самое, что и раньше, — шестнадцать дней от вылета до
+        отъезда, — но по числу в заголовке свёртки.
+        """
+        rows = re.findall(r'<span class="dt"><b>(\d+)</b>', self.html)
         self.assertEqual(len(rows), 16)
         self.assertEqual(rows[0], "4")
         self.assertEqual(rows[-1], "19")
@@ -768,6 +774,214 @@ class TheRuler(unittest.TestCase):
         self.assertNotIn("158.88", script, "курс не вписан в скрипт руками")
         self.assertNotIn("localStorage", script, "линейка ничего не сохраняет")
         self.assertNotIn("fetch", script, "линейка никуда не ходит")
+
+
+class TheDaysAreHers(unittest.TestCase):
+    """План по дням: её текст, вечные id и ни одного второго числа.
+
+    Ни 2026-08-24: «вот это забери расписание. но мне нужно сделать так, чтобы
+    можно было места тасовать и переносить из дня в день. и ссылки на них
+    нужны».
+
+    Тасовка живёт в хранилище и проверяется отдельно — `test/days.test.mjs`
+    (правила) и `test/round.sh` (настоящий круг с настоящей KV). Здесь про то,
+    что уезжает в git и на страницу: данные, ссылки и разметка.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.plan = load_plan()
+        cls.html = render(copy.deepcopy(REAL), copy.deepcopy(cls.plan))
+        cls.days = re.search(r'<div id="days">(.*?)\n</div>', cls.html, re.S).group(1)
+
+    def bent(self):
+        return copy.deepcopy(self.plan)
+
+    # ── данные
+
+    def test_the_plan_covers_the_trip_day_by_day(self):
+        self.assertEqual(len(self.plan), 16)
+        self.assertEqual(self.plan[0]["date"], REAL["trip"]["start"])
+        self.assertEqual(self.plan[-1]["date"], REAL["trip"]["end"])
+        self.assertEqual(sum(len(x["items"]) for x in self.plan), 98)
+
+    def test_ids_are_unique_because_storage_remembers_by_them(self):
+        seen = [i["id"] for day in self.plan for i in day["items"]]
+        self.assertEqual(len(seen), len(set(seen)))
+
+    def test_a_repeated_id_is_caught(self):
+        """Два пункта с одним id ходят парой и удаляются вместе — молча."""
+        plan = self.bent()
+        plan[2]["items"][0]["id"] = plan[1]["items"][0]["id"]
+        with self.assertRaises(Failed) as it:
+            check(copy.deepcopy(REAL), plan)
+        self.assertIn("дважды", str(it.exception))
+
+    def test_a_day_outside_the_trip_is_caught(self):
+        plan = self.bent()
+        plan[3]["date"] = "2027-02-01"
+        with self.assertRaises(Failed) as it:
+            check(copy.deepcopy(REAL), plan)
+        self.assertIn("дни плана", str(it.exception))
+
+    def test_a_missing_day_is_caught(self):
+        plan = self.bent()
+        del plan[5]
+        with self.assertRaises(Failed):
+            check(copy.deepcopy(REAL), plan)
+
+    def test_a_place_that_is_not_in_places_is_caught(self):
+        """Ссылка берётся из `places`; выдуманное имя — ссылка в никуда."""
+        plan = self.bent()
+        plan[4]["items"][0]["place"] = "Кафе, которого нет"
+        with self.assertRaises(Failed) as it:
+            check(copy.deepcopy(REAL), plan)
+        self.assertIn("ссылку взять неоткуда", str(it.exception))
+
+    def test_two_addresses_for_one_thing_are_caught(self):
+        """Адрес живёт в одном месте: и `place`, и свой `site` — это два."""
+        plan = self.bent()
+        item = next(i for day in plan for i in day["items"] if i.get("place"))
+        item["site"] = "https://example.com/"
+        with self.assertRaises(Failed) as it:
+            check(copy.deepcopy(REAL), plan)
+        self.assertIn("в одном месте", str(it.exception))
+
+    def test_a_site_without_https_is_caught(self):
+        plan = self.bent()
+        item = next(i for day in plan for i in day["items"] if i.get("site"))
+        item["site"] = "http://" + item["site"][8:]
+        with self.assertRaises(Failed) as it:
+            check(copy.deepcopy(REAL), plan)
+        self.assertIn("не https", str(it.exception))
+
+    def test_a_transfer_on_a_day_nobody_moves_is_caught(self):
+        plan = self.bent()
+        item = next(i for day in plan for i in day["items"] if i.get("transfer"))
+        item.pop("transfer")
+        plan[6]["items"][0]["transfer"] = "tokyo-kyoto"
+        with self.assertRaises(Failed) as it:
+            check(copy.deepcopy(REAL), plan)
+        self.assertIn("никто никуда не едет", str(it.exception))
+
+    def test_a_lost_item_from_her_booking_list_is_caught(self):
+        """Её «что обязательно бронировать» — сверка полноты разбора."""
+        plan = self.bent()
+        plan[2]["items"] = [i for i in plan[2]["items"] if i["id"] != "d06-6"]
+        with self.assertRaises(Failed) as it:
+            check(copy.deepcopy(REAL), plan)
+        self.assertIn("потерялось при разборе", str(it.exception))
+
+    def test_the_old_days_section_cannot_come_back(self):
+        """Два заголовка на одну дату в двух файлах расходятся молча."""
+        trip = copy.deepcopy(REAL)
+        trip["days"] = {"2027-01-05": {"title": "Прилёт", "items": ["Заезд с 15:00"]}}
+        with self.assertRaises(Failed) as it:
+            check(trip, self.bent())
+        self.assertIn("days-plan.json", str(it.exception))
+
+    def test_the_cities_of_the_plan_match_the_bookings(self):
+        """Раздел дней и нитка обязаны рассказывать один маршрут."""
+        plan = self.bent()
+        for day in plan:
+            if day["city"] == "Киото":
+                day["city"] = "Осака"
+        with self.assertRaises(Failed) as it:
+            render(copy.deepcopy(REAL), plan)
+        self.assertIn("разошлись", str(it.exception))
+
+    # ── страница
+
+    def test_every_item_is_on_the_page_with_its_eternal_id(self):
+        found = re.findall(r'<li class="it" data-item="([^"]+)"', self.days)
+        self.assertEqual(found, [i["id"] for day in self.plan for i in day["items"]])
+
+    def test_the_name_leads_to_the_map_and_only_where_there_is_one(self):
+        """В поездке от названия нужно «где это», а не «что про это пишут»."""
+        for day in self.plan:
+            for item in day["items"]:
+                block = re.search(
+                    r'<li class="it" data-item="%s".*?</li>' % re.escape(item["id"]),
+                    self.days, re.S).group(0)
+                if item.get("map"):
+                    self.assertIn("google.com/maps/search/", block, item["id"])
+                    self.assertIn('target="_blank"', block, item["id"])
+                    self.assertIn('rel="noopener"', block, item["id"])
+                else:
+                    # «Обед» и «выезд» ссылками не притворяются.
+                    self.assertNotIn("<a ", block, item["id"])
+
+    def test_the_site_mark_stands_only_where_it_is_needed(self):
+        marks = re.findall(r'<a class="mk site" href="([^"]+)"', self.days)
+        self.assertEqual(len(marks), 9, "четыре бронируемых, музей и четыре места")
+        for href in marks:
+            self.assertTrue(href.startswith("https://"), href)
+
+    def test_the_verified_places_are_linked_not_copied(self):
+        """Четыре места уже проверены — адрес берётся оттуда, а не пишется второй раз."""
+        known = {p["title"]: p["site"] for p in REAL["places"]}
+        for title, site in known.items():
+            self.assertIn(site, self.days, f"{title}: ссылка из `places` не доехала")
+        self.assertEqual(
+            self.html.count('href="' + known["KUMONOCHA"] + '"'), 3,
+            "KUMONOCHA — в карточке города и в двух днях, но адрес один",
+        )
+
+    def test_a_transfer_day_carries_no_second_price(self):
+        """Цена переезда живёт в «Переездах». Второе число рядом с первым
+        расходится молча, а замечается на кассе."""
+        for day in self.plan:
+            for item in day["items"]:
+                if not item.get("transfer"):
+                    continue
+                block = re.search(
+                    r'<li class="it" data-item="%s".*?</li>' % re.escape(item["id"]),
+                    self.days, re.S).group(0)
+                self.assertIn("в «Переездах»", block)
+                self.assertNotIn("¥", block, item["id"])
+
+    def test_no_prices_leak_into_the_days_at_all(self):
+        """У пунктов нет цен, и придумывать их нельзя: в чек дни не идут."""
+        self.assertNotIn("¥", self.days)
+        self.assertNotIn("$", self.days)
+
+    def test_the_days_are_folded_by_default(self):
+        """«Слишком много листать вниз» — её слово про длинную версию."""
+        self.assertEqual(self.days.count("<details"), self.days.count("</details>"))
+        self.assertEqual(self.days.count('<details class="day'), 16)
+        opened = re.findall(r"<details[^>]*\sopen[^>]*>", self.days)
+        self.assertEqual(len(opened), 5,
+                         "открыты только отрезки городов — вылет и четыре города; "
+                         "дни свёрнуты, ближайший раскрывает браузер")
+
+    def test_the_handles_appear_only_when_storage_answers(self):
+        """Кнопка, которой некуда нажать, — обещание, которое не сдержать."""
+        for gone in ("убрать", "правка", "+ пункт", "перенести в день"):
+            self.assertNotIn(gone, self.days, f"«{gone}» нарисовано до ответа хранилища")
+
+    def test_the_fold_says_what_is_inside_without_opening(self):
+        tag = re.search(r'<span class="tag" data-tag="days">([^<]*)</span>', self.html).group(1)
+        self.assertIn("16 дней", tag)
+        self.assertIn("98 пунктов", tag)
+
+    def test_her_notes_to_a_day_are_kept_word_for_word(self):
+        for day in self.plan:
+            if day.get("day_note"):
+                self.assertIn(day["day_note"], self.days, day["date"])
+
+    def test_the_door_gets_the_plan_the_page_was_built_from(self):
+        """Вчерашний план у двери отбил бы перенос в день, который уже есть."""
+        write_plan(copy.deepcopy(self.plan))
+        made = (SITE / "functions" / "api" / "_plan.js").read_text(encoding="utf-8")
+        body = json.loads(re.search(r"export const PLAN = (\[.*\]);", made, re.S).group(1))
+        self.assertEqual([x["date"] for x in body], [x["date"] for x in self.plan])
+        self.assertEqual(
+            [i for x in body for i in x["items"]],
+            [i["id"] for day in self.plan for i in day["items"]],
+        )
+        # Только id: текст живёт на странице, и второй его экземпляр означал бы,
+        # что поправка доезжает до неё через раз.
+        self.assertNotIn("Shibuya Sky", made)
 
 
 if __name__ == "__main__":

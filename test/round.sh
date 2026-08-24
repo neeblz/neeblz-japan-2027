@@ -51,7 +51,15 @@ start() {
   echo "✗ wrangler не поднялся; хвост лога:" >&2; tail -8 "$LOG" >&2; exit 1
 }
 stop() { kill_tree "$ROOT"; ROOT=""; }
-cleanup() { stop; rm -f "$JAR" "$OUT" "$LOG"; }
+# План по дням круг правит на время одной проверки — и обязан вернуть его на
+# место, даже если умрёт посреди. Файл этот в git, и оставить его подменённым
+# значит выложить чужой план её же руками.
+PLAN=data/days-plan.json
+cleanup() {
+  stop
+  [ -f "$PLAN.round" ] && mv "$PLAN.round" "$PLAN"
+  rm -f "$JAR" "$OUT" "$LOG"
+}
 trap cleanup EXIT
 
 # Порт мог остаться занятым прошлым прогоном — тогда мы проверяли бы не то,
@@ -110,6 +118,51 @@ import json,sys; d=json.load(open('$OUT'))
 sys.exit(0 if d['ticks'].get('Поезда::Токио → Киото, 9 января') is True else 1)" \
   && say y "галочка легла в хранилище" || say n "галочка не сохранилась: $(cat "$OUT")"
 
+# ── дни: тасовать, переносить, дописывать, убирать
+#
+# Ни 2026-08-24: «мне нужно сделать так, чтобы можно было места тасовать и
+# переносить из дня в день». Круг проверяет ровно это утверждение целиком:
+# порядок принадлежит ей, а не файлу, — и пересборка его не трогает.
+days() {  # метод, тело → ответ в $OUT, код возврата
+  curl -s -b "$JAR" -o "$OUT" -w '%{http_code}' -X "$1" "http://127.0.0.1:$PORT/api/days" \
+       -H "content-type: application/json" --data "$2"
+}
+
+code=$(curl -s -o "$OUT" -w '%{http_code}' "http://127.0.0.1:$PORT/api/days")
+say "$([ "$code" = 401 ] && echo y || echo n)" "без пароля ручка дней отвечает $code (ждали 401)"
+
+curl -s -b "$JAR" -o "$OUT" "http://127.0.0.1:$PORT/api/days"
+python3 - "$OUT" <<'PY' && say y "пусто в хранилище — порядок приезжает из файла" \
+                        || say n "засев из файла не приехал"
+import json, sys
+d = json.load(open(sys.argv[1]))
+order = d.get("order", {})
+sys.exit(0 if d.get("ok") and len(order) == 16
+         and order["2027-01-07"][:2] == ["d07-1", "d07-2"]
+         and d["own"] == {} and d["gone"] == [] else 1)
+PY
+
+# Четыре движения, каждое своим глаголом.
+code=$(days PATCH '{"id":"d07-2","to":"2027-01-17","at":0}')
+say "$([ "$code" = 200 ] && echo y || echo n)" "teamLab Planets переехал с 7 января на 17-е ($code)"
+code=$(days PATCH '{"id":"d06-1","to":"2027-01-06","at":3}')
+say "$([ "$code" = 200 ] && echo y || echo n)" "пункт передвинут внутри своего дня ($code)"
+code=$(days POST '{"date":"2027-01-11","title":"Проба круга","time":"вечер","map":"Nara Park"}')
+say "$([ "$code" = 200 ] && echo y || echo n)" "свой пункт дописан в день ($code)"
+MINE=$(python3 -c "import json; print(json.load(open('$OUT'))['added'])")
+code=$(days DELETE '{"id":"d07-5"}')
+say "$([ "$code" = 200 ] && echo y || echo n)" "лишний пункт убран ($code)"
+code=$(days PATCH '{"id":"d06-3","title":"Обед где-нибудь по дороге"}')
+say "$([ "$code" = 200 ] && echo y || echo n)" "название пункта переписано ($code)"
+
+# И то, что не должно пройти.
+code=$(days PATCH '{"id":"d07-1","to":"2027-03-01"}')
+say "$([ "$code" = 422 ] && echo y || echo n)" "перенос в несуществующий день отбит ($code)"
+code=$(days POST '{"date":"2027-01-11","title":"   "}')
+say "$([ "$code" = 422 ] && echo y || echo n)" "пункт без названия отбит ($code)"
+code=$(days DELETE '{"id":"d07-5"}')
+say "$([ "$code" = 422 ] && echo y || echo n)" "убрать убранное второй раз нельзя ($code)"
+
 # ── ПЕРЕСБОРКА: dist/ стирается целиком и собирается заново
 echo "— пересобираю страницу (dist/ стирается целиком)"
 stop
@@ -134,6 +187,58 @@ sys.exit(0 if kinds == ["booking", "place", "todo"]
          and usd and usd[0]["amount"] == 980
          and free and free[0]["title"] == "Виза" else 1)
 PY
+
+# ── и главное: её расстановка пережила пересборку
+#
+# Это то самое утверждение, ради которого дни и переехали в хранилище. Файл
+# после пересборки говорит, что teamLab Planets стоит 7 января вторым пунктом;
+# она унесла его на 17-е — и побеждает она.
+curl -s -b "$JAR" -o "$OUT" "http://127.0.0.1:$PORT/api/days"
+MINE="$MINE" python3 - "$OUT" <<'PY' && say y "после пересборки дни лежат так, как она их разложила" \
+                                     || say n "пересборка сбила её расстановку"
+import json, os, sys
+d = json.load(open(sys.argv[1]))
+order, own = d["order"], d["own"]
+mine = os.environ["MINE"]
+ok = (
+    order["2027-01-17"][0] == "d07-2"          # переехал и остался первым
+    and "d07-2" not in order["2027-01-07"]     # и в старом дне его нет
+    and order["2027-01-06"][:4] == ["d06-2", "d06-3", "d06-4", "d06-1"]
+    and mine in order["2027-01-11"]            # её собственный пункт на месте
+    and own[mine]["title"] == "Проба круга"
+    and own[mine]["map"] == "Nara Park"
+    and "d07-5" not in sum(order.values(), []) # убранное не воскресло
+    and d["gone"] == ["d07-5"]
+    and d["edits"]["d06-3"]["title"] == "Обед где-нибудь по дороге"
+    # Остальное файл не потерял: 98 было, один убран, один дописан.
+    and sum(len(v) for v in order.values()) == 98
+)
+sys.exit(0 if ok else 1)
+PY
+
+# Дописанный в файл пункт обязан появиться, не сбив её перестановок. Проверять
+# это на настоящем плане нельзя — он и есть тот файл, — поэтому пункт живёт
+# ровно на время проверки и сразу возвращается назад.
+python3 - <<'PY'
+import json, pathlib
+p = pathlib.Path("data/days-plan.json")
+raw = json.loads(p.read_text(encoding="utf-8"))
+day = next(x for x in raw["days"] if x["date"] == "2027-01-07")
+day["items"].insert(1, {"id": "d07-proba", "time": "проба", "title": "Дописанный пункт"})
+p.with_suffix(".json.round").write_text(p.read_text(encoding="utf-8"), encoding="utf-8")
+p.write_text(json.dumps(raw, ensure_ascii=False, indent=2), encoding="utf-8")
+PY
+stop; sleep 1; python3 build.py > /dev/null; start
+curl -s -b "$JAR" -o "$OUT" "http://127.0.0.1:$PORT/api/days"
+python3 - "$OUT" <<'PY' && say y "дописанное в файл встаёт на своё место, не тронув её порядок" \
+                        || say n "дописанный пункт не появился или сбил расстановку"
+import json, sys
+order = json.load(open(sys.argv[1]))["order"]
+sys.exit(0 if order["2027-01-07"][:2] == ["d07-1", "d07-proba"]
+         and order["2027-01-17"][0] == "d07-2" else 1)
+PY
+mv data/days-plan.json.round data/days-plan.json
+stop; sleep 1; python3 build.py > /dev/null; start
 
 # ── и печенье пережило пересборку тоже: пароль тот же, замок тот же
 code=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT/api/entries")

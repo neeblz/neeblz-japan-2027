@@ -73,8 +73,18 @@ with sync_playwright() as pw:
     page = browser.new_page(viewport={"width": args.width, "height": 900})
     # Удаление спрашивает подтверждение — соглашаемся, но только тогда, когда
     # спросили: молчаливое согласие на всё скрыло бы пропавший вопрос.
+    #
+    # Отказаться тоже надо уметь: у пункта дня удаление необратимо (файловый
+    # пункт ложится в «убранное» и назад из браузера не достаётся), и
+    # проверить там можно только одно — что вопрос задан, а «нет» слушают.
     asked = []
-    page.on("dialog", lambda d: (asked.append(d.message), d.accept()))
+    agree = {"yes": True}
+
+    def answer(dialog):
+        asked.append(dialog.message)
+        dialog.accept() if agree["yes"] else dialog.dismiss()
+
+    page.on("dialog", answer)
 
     page.goto(args.url + "/", wait_until="load")
     page.fill('input[name="password"]', args.password)
@@ -106,7 +116,12 @@ with sync_playwright() as pw:
     check = page.locator("#check")
     housing_jpy = digits(check.locator("[data-jpy]").inner_text())
     housing_usd = digits(check.locator("[data-usd]").inner_text())
-    want(housing_jpy == 297_912, f"жильё на месте: ¥{housing_jpy}")
+    # ¥290 675, а не ¥297 912: 23 августа Ни прислала новое подтверждение по
+    # lyf Ginza — тариф ASR Advanced Purchase, ¥50 205 вместо ¥57 442. Число
+    # прибито нарочно, чтобы тихая правка её денег краснела; здесь оно просто
+    # осталось от старой брони, и об этом никто не узнал, потому что этот тест
+    # с тех пор не гоняли.
+    want(housing_jpy == 290_675, f"жильё на месте: ¥{housing_jpy}")
     # `inner_text` отдаёт то, что нарисовано, а подпись рисуется прописными
     # (`text-transform`), — сравниваем без учёта регистра.
     want("жильё" in check.locator("[data-cap]").inner_text().lower(),
@@ -209,8 +224,139 @@ with sync_playwright() as pw:
     want(page.locator(f'[data-todo="{built}"]').is_checked(),
          "галочка на пункте из trip.json тоже пережила перезагрузку")
 
-    # ── и убрать за собой
+    # ── дни: тасовать руками и увидеть, что это осталось
+    #
+    # Ни 2026-08-24: «мне нужно сделать так, чтобы можно было места тасовать и
+    # переносить из дня в день». Круг в `round.sh` доказывает то же самое через
+    # ручку; здесь — через её руки, потому что между ручкой и руками лежит вся
+    # страница, и сломаться может именно она.
+    #
+    # Убирается за собой всё: пункты возвращаются на свои места, дописанное
+    # удаляется, правка снимается. Необратимое (удаление файлового пункта) тут
+    # не проверяется совсем — только то, что вопрос задают и «нет» слушают.
     unfold()
+    day6 = page.locator('#days details.day[data-day="2027-01-06"]')
+    items6 = page.locator('[data-day-items="2027-01-06"] > li')
+    order6 = [x.get_attribute("data-item") for x in items6.all()]
+    want(order6[:2] == ["d06-1", "d06-2"], f"день приезжает в файловом порядке: {order6[:3]}")
+    want(day6.locator(".acts").count() == len(order6),
+         "ручки появились у каждого пункта — значит хранилище ответило")
+
+    # 1. Вниз на одну строку — и это переживает перезагрузку.
+    items6.first.locator(".acts .step").last.click()
+    page.wait_for_timeout(700)
+    page.reload(wait_until="load")
+    page.wait_for_timeout(900)
+    unfold()
+    moved = [x.get_attribute("data-item")
+             for x in page.locator('[data-day-items="2027-01-06"] > li').all()]
+    want(moved[:2] == ["d06-2", "d06-1"],
+         f"пункт съехал на строку вниз и остался там после перезагрузки: {moved[:3]}")
+
+    # 2. Перенос в другой день списком дат — тот способ, который работает
+    #    всегда: перетащить с 6 января на 17-е нельзя, между ними два экрана.
+    page.locator('[data-item="d06-1"] .acts select').select_option("2027-01-17")
+    page.wait_for_timeout(800)
+    want(page.locator('[data-day-items="2027-01-06"] [data-item="d06-1"]').count() == 0,
+         "пункт ушёл из старого дня")
+    want(page.locator('[data-day-items="2027-01-17"] [data-item="d06-1"]').count() == 1,
+         "и приехал в 17 января")
+    counted = page.locator('#days details.day[data-day="2027-01-17"] [data-count]').inner_text()
+    want(counted == "10", f"счётчик дня пересчитался ({counted})")
+
+    # 3. Перетаскивание — приятное поверх надёжного.
+    #
+    # Брошено в середину первой строки, то есть ниже её середины, — значит
+    # «после неё». Место считается по середине строки под курсором, как везде:
+    # выше середины — перед ней, ниже — за ней.
+    page.drag_and_drop('[data-item="d17-9"]', '[data-item="d17-1"]')
+    page.wait_for_timeout(800)
+    dragged = [x.get_attribute("data-item")
+               for x in page.locator('[data-day-items="2027-01-17"] > li').all()]
+    want(dragged[:2] == ["d17-1", "d17-9"],
+         f"перетащенный мышью пункт уехал из конца дня в начало: {dragged[:3]}")
+    page.reload(wait_until="load")
+    page.wait_for_timeout(900)
+    unfold()
+    dragged = [x.get_attribute("data-item")
+               for x in page.locator('[data-day-items="2027-01-17"] > li').all()]
+    want(dragged[:2] == ["d17-1", "d17-9"], "и перетаскивание тоже пережило перезагрузку")
+
+    # 4. Свой пункт: дописать, увидеть ссылку на карту, убрать.
+    page.locator('#days details.day[data-day="2027-01-11"] .addday').click()
+    page.fill('.itemform input[name="title"]', "Проба руками")
+    page.fill('.itemform input[name="time"]', "вечер")
+    page.fill('.itemform input[name="map"]', "Nara Park")
+    page.click(".itemform .save")
+    page.wait_for_timeout(900)
+    mine = page.locator('[data-day-items="2027-01-11"] .it.mine')
+    want(mine.count() == 1, f"свой пункт дописан в день ({mine.count()})")
+    href = mine.first.locator("a.nm").get_attribute("href")
+    want("Nara+Park" in href or "Nara%20Park" in href,
+         f"её пункт тоже ведёт на карту: {href}")
+
+    # 5. Правка файлового пункта ложится поверх, а не вместо.
+    page.locator('[data-item="d11-6"] .acts .ed').click()
+    page.fill('.itemform input[name="title"]', "Обед в Наре")
+    page.click(".itemform .save")
+    page.wait_for_timeout(900)
+    want("Обед в Наре" in page.locator('[data-item="d11-6"]').inner_text(),
+         "переписанное название видно на месте пункта")
+
+    # 6. Удаление спрашивает — и «нет» слушают.
+    agree["yes"] = False
+    asked.clear()
+    page.locator('[data-item="d11-5"] .acts .rm').click()
+    page.wait_for_timeout(700)
+    want(len(asked) == 1, f"удаление спросило подтверждение ({len(asked)})")
+    want(page.locator('[data-item="d11-5"]').count() == 1,
+         "и на «нет» пункт остался на месте — молча ничего не стёрлось")
+    agree["yes"] = True
+
+    # ── вернуть дни как были
+    #
+    # Возвращается всё теми же кнопками, которыми двигали: «наверх» одним
+    # движением тут нет, и заводить её ради уборки за собой значило бы
+    # проверять не ту страницу, которой она пользуется.
+    def nudge(item, date, want_at):
+        for _ in range(14):
+            rows = [x.get_attribute("data-item")
+                    for x in page.locator(f'[data-day-items="{date}"] > li').all()]
+            at = rows.index(item)
+            if at == want_at:
+                return True
+            page.locator(f'[data-item="{item}"] .acts .step').nth(0 if at > want_at else 1).click()
+            page.wait_for_timeout(450)
+        return False
+
+    page.locator('[data-item="d06-1"] .acts select').select_option("2027-01-06")
+    page.wait_for_timeout(700)
+    want(nudge("d06-1", "2027-01-06", 0), "пункт поднят обратно наверх дня")
+    want(nudge("d17-9", "2027-01-17", 8), "перетащенный пункт возвращён в конец дня")
+    page.locator('[data-item="d11-6"] .acts .ed').click()
+    page.fill('.itemform input[name="title"]', "")
+    page.click(".itemform .save")
+    page.wait_for_timeout(700)
+    page.locator('[data-day-items="2027-01-11"] .it.mine .acts .rm').click()
+    page.wait_for_timeout(700)
+    page.reload(wait_until="load")
+    page.wait_for_timeout(900)
+    unfold()
+    back6 = [x.get_attribute("data-item")
+             for x in page.locator('[data-day-items="2027-01-06"] > li').all()]
+    want(back6 == ["d06-1", "d06-2", "d06-3", "d06-4", "d06-5", "d06-6", "d06-7"],
+         f"6 января вернулось в файловый порядок: {back6}")
+    want(page.locator('[data-day-items="2027-01-11"] .it.mine').count() == 0,
+         "дописанный пункт убран")
+    want("Обед" == page.locator('[data-item="d11-6"] .nm').inner_text(),
+         "снятая правка вернула файловый текст, а не пустоту")
+
+    # ── и убрать за собой
+    #
+    # Счёт вопросов начинается заново: дни свои подтверждения уже спросили, и
+    # смешивать их с записями значит проверять сумму вместо утверждения.
+    unfold()
+    asked.clear()
     count = page.locator(".own").count()
     wipe()
     page.locator(f'label:has([data-todo="{built}"])').click()

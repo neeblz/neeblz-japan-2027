@@ -25,6 +25,13 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 DATA = HERE / "data" / "trip.json"
+# План по дням лежит отдельным файлом, а не разделом `trip.json`, потому что у
+# него другой хозяин. В `trip.json` — брони, деньги и сроки: их вносит Блэйз, и
+# страница их только показывает. Здесь — засев расстановки: первое наполнение
+# хранилища, после которого порядок принадлежит Ни и живёт в KV. Держать рядом
+# то, что она двигает, и то, чего ей двигать нельзя, — значит рано или поздно
+# перепутать, кто чей текст переписал.
+PLAN_DATA = HERE / "data" / "days-plan.json"
 SITE = HERE / "site"
 DIST = HERE / "dist"
 
@@ -121,20 +128,36 @@ def tellink(phone: str) -> str:
     return "tel:" + re.sub(r"[^\d+]", "", phone)
 
 
+def load_plan() -> list:
+    """Дни из `days-plan.json` — только сами дни, без записок самому себе.
+
+    Ключи с подчёркивания в этом файле — объяснения полей, а `book_list` — её
+    собственный список «что обязательно бронировать», нужный сборке для сверки
+    полноты, а не странице. Наружу отсюда уходит один список дней.
+    """
+    return json.loads(PLAN_DATA.read_text(encoding="utf-8"))["days"]
+
+
 # ─────────────────────────────────────────── проверки
 
 class Failed(Exception):
     pass
 
 
-def check(trip: dict) -> list[str]:
+def check(trip: dict, plan: list | None = None) -> list[str]:
     """Сверить то, что страница покажет, с тем, что в неё положено.
 
     Проверяется не оформление, а четыре вещи, в которых ошибка стоит денег:
     непрерывность дат, ночи против календаря, суммы против разбивки по оплате
     и то, что наложение 14-го никуда не делось.
+
+    План по дням проверяется здесь же (правила 11–14), а не отдельным
+    инструментом: его id — ключи, по которым хранилище узнаёт передвинутое, и
+    сломанный id стоит дороже сломанной вёрстки. Молчаливая пропажа пункта
+    выглядит на странице ровно как пункт, который она сама убрала.
     """
     said = []
+    plan = load_plan() if plan is None else plan
     stays = sorted(trip["stays"], key=lambda s: (s["checkin"]["date"], s["checkout"]["date"]))
 
     # 1. Ночи в каждой броне совпадают с календарём.
@@ -294,8 +317,12 @@ def check(trip: dict) -> list[str]:
     # 10. Никаких секретов в данных. Ключи с подчёркивания — записки самому
     #    себе о том, чего сюда класть нельзя; они перечисляют запретные слова
     #    и поэтому в досмотр не идут, иначе инструкция запрещала бы сама себя.
+    #
+    #    План по дням досматривается вместе с бронями: он такой же git-файл и
+    #    такая же выкладываемая страница, а «личного на странице нет» — правило
+    #    про страницу целиком, а не про один её файл.
     blob = json.dumps(
-        {k: v for k, v in trip.items() if not k.startswith("_")}, ensure_ascii=False
+        [{k: v for k, v in trip.items() if not k.startswith("_")}, plan], ensure_ascii=False
     )
     for pattern, what in (
         (r"\b[\w.+-]+@[\w-]+\.[\w.]+\b", "почта"),
@@ -305,6 +332,85 @@ def check(trip: dict) -> list[str]:
         hit = re.search(pattern, blob)
         if hit:
             raise Failed(f"в данных {what}: {hit.group(0)!r} — это не должно попасть в git")
+
+    # 11. Раздела `days` в `trip.json` больше нет и заводить его заново нельзя.
+    #    Два заголовка на одну дату в двух файлах — это второй экземпляр той же
+    #    вещи; расходятся такие молча, а замечаются в чужой стране.
+    if "days" in trip:
+        raise Failed("в trip.json снова завёлся раздел `days` — план по дням "
+                     "живёт в data/days-plan.json, а порядок пунктов в хранилище")
+
+    # 12. Каждый день плана — настоящий день поездки, и каждый день поездки в
+    #    плане есть. День, которого нет в плане, — это дырка, которую нечем
+    #    показать; день мимо поездки — пункт, который она не найдёт нигде.
+    want = []
+    day = start
+    while day <= end:
+        want.append(day.isoformat())
+        day += timedelta(days=1)
+    got = [x["date"] for x in plan]
+    if got != want:
+        raise Failed(f"дни плана не совпали с днями поездки: {len(got)} против {len(want)}, "
+                     f"первое расхождение {next((a for a, b in zip(got + [None] * len(want), want) if a != b), '—')}")
+
+    # 13. id пунктов вечные и потому обязаны быть неповторимыми: по ним
+    #    хранилище узнаёт передвинутое. Два пункта с одним id — это два пункта,
+    #    которые ходят парой и удаляются вместе, причём молча.
+    seen, count = {}, 0
+    for day_plan in plan:
+        for item in day_plan["items"]:
+            count += 1
+            if not item.get("id"):
+                raise Failed(f'{day_plan["date"]}: пункт «{item.get("title", "?")}» без id')
+            if item["id"] in seen:
+                raise Failed(f'id {item["id"]} встречается дважды — '
+                             f'{seen[item["id"]]} и {day_plan["date"]}')
+            seen[item["id"]] = day_plan["date"]
+            if not item.get("title", "").strip():
+                raise Failed(f'{day_plan["date"]}: пункт {item["id"]} без названия')
+
+    # 14. Ссылки и отсылки. Сайт — только https и только у того, у кого он
+    #    правда есть; место — из `places`, чтобы адрес жил в одном месте, а не
+    #    в двух; переезд — на дне, где по броням действительно едут.
+    known_places = {p["title"]: p for p in trip.get("places", [])}
+    slugs = {"Токио": "tokyo", "Киото": "kyoto", "Киносаки": "kinosaki"}
+    hop_dates = {t["date"] for t in trip.get("transfers", [])}
+    sites, linked = 0, 0
+    for day_plan in plan:
+        for item in day_plan["items"]:
+            if item.get("site"):
+                if not item["site"].startswith("https://"):
+                    raise Failed(f'{item["id"]}: сайт «{item["site"]}» не https')
+                sites += 1
+            if item.get("place"):
+                place = known_places.get(item["place"])
+                if not place:
+                    raise Failed(f'{item["id"]}: места «{item["place"]}» нет в `places` — '
+                                 "ссылку взять неоткуда")
+                if item.get("site"):
+                    raise Failed(f'{item["id"]}: и `place`, и свой `site` — '
+                                 "адрес обязан жить в одном месте")
+                linked += 1
+            if item.get("transfer"):
+                parts = item["transfer"].split("-")
+                if len(parts) != 2 or not all(p in slugs.values() for p in parts):
+                    raise Failed(f'{item["id"]}: переезд «{item["transfer"]}» '
+                                 "называет город, которого в поездке нет")
+                if day_plan["date"] not in hop_dates:
+                    raise Failed(f'{item["id"]}: переезд стоит на {day_plan["date"]}, '
+                                 "а по броням в этот день никто никуда не едет")
+
+    # Её собственный список «что бронировать» — сверка полноты: пункт из него,
+    # потерявший свой id при разборе, иначе исчез бы молча.
+    for line in json.loads(PLAN_DATA.read_text(encoding="utf-8")).get("book_list", []):
+        for key in ("item", "also"):
+            if line.get(key) and line[key] not in seen:
+                raise Failed(f'в списке «что бронировать» указан пункт {line[key]}, '
+                             f'а такого в плане нет — «{line["what"]}» потерялось при разборе')
+
+    said.append(f"план по дням: {len(plan)} дней, {count} пунктов, "
+                f'{sites} {plural(sites, "свой сайт", "своих сайта", "своих сайтов")} '
+                f'и {linked} {plural(linked, "ссылка", "ссылки", "ссылок")} из `places`')
 
     said.append(f"броней {len(stays)}, ночей {len(nights)}, дней {(end - start).days + 1}")
     return said
@@ -1059,46 +1165,160 @@ def checklist(trip: dict) -> str:
 </div>"""
 
 
-def by_day(trip: dict, stays: list, alerts: list) -> str:
+def runs_of(plan: list, all_legs: list) -> list:
+    """Дни, сбитые в отрезки по городам — теми же отрезками, что и нитка.
+
+    Группировка идёт по полю `city` самого плана, а не по броням: она называет
+    город в дне, и её слово тут первое. Но названные ею города обязаны совпасть
+    с бронями по порядку — иначе раздел дней рассказывал бы про один маршрут, а
+    нитка и деньги про другой, и заметить это было бы нечем.
+
+    День без города — самолёт: 4 января она ещё летит, 19-го уже уезжает. Такой
+    день прилипает к соседнему отрезку, а не заводит свой: отрезок «Дорога» из
+    одного дня — это заголовок, повторяющий свой единственный пункт.
+    """
+    runs = []
+    for day in plan:
+        city = day.get("city")
+        if runs and (city is None or city == runs[-1]["city"]):
+            runs[-1]["days"].append(day)
+        else:
+            runs.append({"city": city, "days": [day]})
+
+    # Отрезки с городом и отрезки нитки идут в одном порядке и обязаны совпасть
+    # именами: Токио в поездке дважды, и второй раз — уже Асакуса, а не Гиндза.
+    named = [r for r in runs if r["city"]]
+    if [r["city"] for r in named] != [leg["city"] for leg in all_legs]:
+        raise Failed(
+            "города в плане по дням и в бронях разошлись: "
+            f'{[r["city"] for r in named]} против {[leg["city"] for leg in all_legs]}'
+        )
+    for run, leg in zip(named, all_legs):
+        run["area"], run["tone"] = leg["area"], leg["tone"]
+    for run in runs:
+        if not run["city"]:
+            # Отрезок без города бывает только первым (вылет): всё остальное
+            # прилипло выше. Название берём у единственного дня.
+            run["area"], run["tone"] = "", SPARE[-1]
+    return runs
+
+
+def day_item(item: dict, sites: dict) -> str:
+    """Один пункт дня.
+
+    Название — ссылка на карту, а не на сайт: в поездке от названия нужно «где
+    это», а не «что про это пишут». Поисковая строка лежит в данных (`map`), и
+    у бытовых пунктов её нет — «обед» и «выезд» ссылками не притворяются.
+
+    Сайт — отдельной маленькой меткой и только там, где он правда нужен: у
+    бронируемого. Адрес при этом живёт в одном месте — либо своим полем
+    `site`, либо ссылкой на уже проверенное место из `places`; сборка не даёт
+    завести оба сразу.
+
+    Части подписаны `data-part`, потому что переписывать их будет браузер: её
+    правка ложится поверх файлового текста по вечному id, и находить, что
+    именно менять, по классу оформления было бы способом однажды не найти.
+    """
+    name = e(item["title"])
+    if item.get("map"):
+        title = (f'<a class="nm" data-part="title" href="{e(maplink(item["map"]))}"'
+                 f' target="_blank" rel="noopener">{name}</a>')
+    else:
+        title = f'<span class="nm" data-part="title">{name}</span>'
+
+    marks = []
+    if item.get("book"):
+        marks.append('<span class="mk bk">бронировать</span>')
+    site = item.get("site") or sites.get(item.get("place", ""))
+    if site:
+        marks.append(f'<a class="mk site" href="{e(site)}" target="_blank"'
+                     f' rel="noopener">сайт</a>')
+    # Переезд уже посчитан в «Переездах» — здесь только пометка и отсылка.
+    # Второе число рядом с первым расходится молча, а замечается на кассе.
+    if item.get("transfer"):
+        marks.append('<span class="mk tr">переезд · время и цена в «Переездах»</span>')
+
+    note = e(item.get("note", ""))
+    return (
+        f'<li class="it" data-item="{e(item["id"])}">'
+        f'<span class="tm" data-part="time">{e(item.get("time", ""))}</span>'
+        f'<span class="wh">{title}'
+        f'<span class="marks">{"".join(marks)}</span>'
+        f'<em class="nt" data-part="note"{"" if note else " hidden"}>{note}</em>'
+        f"</span></li>"
+    )
+
+
+def by_day(trip: dict, stays: list, alerts: list, plan: list, all_legs: list) -> str:
+    """Шестнадцать дней, которые она тасует руками.
+
+    **Порядок здесь принадлежит ей, а не файлу.** Собранная страница показывает
+    план так, как он лежит в `days-plan.json`, — это засев и это же честный
+    ответ, когда хранилище не отвечает. Как только её расстановка доезжает,
+    браузер переставляет уже существующие строки в её порядок: не рисует
+    заново, а двигает. Поэтому ссылки, метки и сайты живут в одном месте — в
+    этой функции, — и второго способа нарисовать пункт на странице нет.
+
+    **Свёрнуто по умолчанию.** Её слово про длинную версию: «слишком много
+    листать вниз». Раскрыт отрезок города, свёрнут день; ближайший день
+    открывает браузер, потому что «ближайший» стареет каждые сутки, а страница
+    собирается редко.
+
+    Ручек (двинуть, перенести, дописать, убрать) в собранной разметке нет
+    нарочно: все они ходят в хранилище, и нарисованная кнопка, которой некуда
+    нажать, — обещание, которого страница не может сдержать.
+    """
     flagged = {a["id"]: a["level"] for a in alerts}
-    start, end = d(trip["trip"]["start"]), d(trip["trip"]["end"])
-    planned = trip.get("days", {})
-    transit = {d(t["date"]): t for t in trip.get("transit", [])}
+    sites = {p["title"]: p["site"] for p in trip.get("places", []) if p.get("site")}
+    start = d(trip["trip"]["start"])
+    total = sum(len(x["items"]) for x in plan)
 
-    rows = []
-    day = start
-    while day <= end:
-        iso = day.isoformat()
-        here = [s for s in stays if d(s["checkin"]["date"]) <= day < d(s["checkout"]["date"])]
-        moving = [s for s in stays if d(s["checkin"]["date"]) == day]
-        base = " / ".join(dict.fromkeys(f'{s["city"]} · {s["area"]}' for s in here))
-        if not base:
-            leg = transit.get(day)
-            base = leg["detail"].capitalize() if leg else "—"
+    blocks = []
+    for run in runs_of(plan, all_legs):
+        days = []
+        for day_plan in run["days"]:
+            when = d(day_plan["date"])
+            here = [s for s in stays
+                    if d(s["checkin"]["date"]) <= when < d(s["checkout"]["date"])]
+            moving = [s for s in stays if d(s["checkin"]["date"]) == when]
+            tones = {flagged.get(s.get("conflict")) for s in here} - {None}
+            clash = "red" if "red" in tones else "noted" if tones and len(here) > 1 else ""
+            note = day_plan.get("day_note", "")
+            items = "".join(day_item(x, sites) for x in day_plan["items"])
 
-        p = planned.get(iso, {})
-        items = "".join(f"<li>{e(x)}</li>" for x in p.get("items", []))
-        tones = {flagged.get(s.get("conflict")) for s in here} - {None}
-        clash = "red" if "red" in tones else "noted" if tones and len(here) > 1 else ""
-
-        rows.append(f"""
-<li class="{'move' if moving and day != start else ''} {clash}">
-  <div class="date">
-    <b>{day.day}</b><span>{WEEKDAYS[day.weekday()]}</span>
+            days.append(f"""
+<details class="day {'move' if moving and when != start else ''} {clash}" data-day="{e(day_plan["date"])}">
+  <summary>
+    <span class="dt"><b>{when.day}</b><i>{WEEKDAYS[when.weekday()]}</i></span>
+    <span class="ttl">{e(day_plan["title"])}</span>
+    <span class="cnt" data-count>{len(day_plan["items"])}</span>
+  </summary>
+  <div class="dbody">
+    <p class="dnote"{"" if note else " hidden"}>{e(note)}</p>
+    <ol class="items" data-day-items="{e(day_plan["date"])}">{items}</ol>
   </div>
-  <div class="body">
-    <p class="base">{e(base)}</p>
-    {f'<p class="title">{e(p["title"])}</p>' if p.get("title") else ''}
-    {f'<ul>{items}</ul>' if items else '<p class="empty">свободно</p>'}
-  </div>
-</li>""")
-        day += timedelta(days=1)
+</details>""")
+
+        first, last = d(run["days"][0]["date"]), d(run["days"][-1]["date"])
+        label = f'{run["city"]} · {run["area"]}' if run["city"] else run["days"][0]["title"]
+        blocks.append(f"""
+<details class="run" open data-run="{e(label)}" style="--tone:{run["tone"]}">
+  <summary>
+    <span class="ct">{e(label)}</span>
+    <span class="sp">{span_dates(first, last)}</span>
+    <span class="n">{len(run["days"])} {plural(len(run["days"]), "день", "дня", "дней")}</span>
+  </summary>
+  <div class="rdays">{"".join(days)}</div>
+</details>""")
 
     return f"""
 <div id="days">
-  <p class="sec-note">Города подставляются из броней. Планы на день —
-     раздел <code>days</code> в <code>trip.json</code>.</p>
-  <ol class="days">{"".join(rows)}</ol>
+  <p class="sec-note">Пункты можно таскать мышью — внутри дня и между открытыми
+     днями, — а через «в день» переносить куда угодно, хоть с 6 января на 17-е.
+     Порядок хранится на сайте, а не в телефоне, и пересборка страницы его не
+     трогает. Названия ведут на карту; «сайт» стоит там, где надо бронировать.</p>
+  <p class="sec-note daysays" data-days-says role="status" hidden></p>
+  <div class="plan" data-plan data-total="{total}">{"".join(blocks)}</div>
 </div>"""
 
 
@@ -1165,7 +1385,7 @@ def bought() -> str:
 </div>"""
 
 
-def more_block(trip: dict, stays: list, alerts: list) -> str:
+def more_block(trip: dict, stays: list, alerts: list, plan: list, all_legs: list) -> str:
     """Списки, дни и багаж — свёрнуты, но никуда не делись.
 
     Ни сказала про длинную версию: «слишком много листать вниз». Выкидывать
@@ -1183,11 +1403,20 @@ def more_block(trip: dict, stays: list, alerts: list) -> str:
     превращается в вопрос, который приходится решать нажатием.
     """
     svc = trip["luggage"]["service"]
-    tags = {"luggage": f'{svc["name"]} · {trip["luggage"]["cost"].split(" за ")[0]}'}
+    total = sum(len(x["items"]) for x in plan)
+    tags = {
+        "luggage": f'{svc["name"]} · {trip["luggage"]["cost"].split(" за ")[0]}',
+        # Число пунктов подставляет и браузер — оно меняется, как только она
+        # что-то дописала или убрала. Но собранное значение обязано быть верным
+        # само по себе: свёрнутое без подписи превращается в вопрос, а подпись,
+        # ждущая хранилища, — в вопрос с задержкой.
+        "days": f'{len(plan)} {plural(len(plan), "день", "дня", "дней")} · '
+                f'{total} {plural(total, "пункт", "пункта", "пунктов")}',
+    }
     parts = [
         ("todo", "Решить и забронировать", checklist(trip)),
         ("bought", "Куплено отдельно", bought()),
-        ("days", "По дням", by_day(trip, stays, alerts)),
+        ("days", "По дням", by_day(trip, stays, alerts, plan, all_legs)),
         ("luggage", "Багаж", luggage(trip)),
     ]
     return "".join(
@@ -1198,7 +1427,7 @@ def more_block(trip: dict, stays: list, alerts: list) -> str:
     )
 
 
-def island(trip: dict, stays: list, all_legs: list) -> str:
+def island(trip: dict, stays: list, all_legs: list, plan: list) -> str:
     """Всё, что странице нужно знать про уже посчитанное, — одним куском.
 
     Числа считает питон при сборке (и проверяет `check`), а браузер их только
@@ -1235,6 +1464,17 @@ def island(trip: dict, stays: list, all_legs: list) -> str:
             for leg in all_legs
         ],
         "groups": [g["group"] for g in trip["todo"]],
+        # Дни для списка «перенести в день →» и для формы «+ пункт». Подпись
+        # готовится тут же: собирать «6 января, ср» в браузере значило бы
+        # завести второй русский календарь рядом с первым.
+        "days": [
+            {
+                "date": x["date"],
+                "label": f'{d(x["date"]).day} {MONTHS[d(x["date"]).month - 1]}, '
+                         f'{WEEKDAYS[d(x["date"]).weekday()]} — {x["title"]}',
+            }
+            for x in plan
+        ],
     }
     text = json.dumps(payload, ensure_ascii=False).replace("<", "\\u003c")
     return f'<script type="application/json" id="japan-data">{text}</script>'
@@ -1740,24 +1980,99 @@ input:checked ~ .txt{color:var(--deep); text-decoration:line-through}
 .txt em{display:block; font-size:12px; color:var(--quiet); font-style:normal; text-decoration:none}
 .reset{margin-top:6px; background:none; border:1px solid var(--rule); border-radius:8px;
   padding:10px 14px; font-size:12.5px; color:var(--quiet); font-family:inherit; cursor:pointer}
-.days{list-style:none; margin:0; padding:0; columns:1}
-.days li{display:flex; gap:13px; padding:9px 0; border-bottom:1px solid var(--hair);
-  break-inside:avoid}
-.days .date{width:34px; flex:none; text-align:center}
-.days .date b{display:block; font-family:var(--serif); font-size:19px; line-height:1}
-.days .date span{font-size:10px; color:var(--quiet)}
-.days .base{margin:0; font-size:13.5px; font-weight:600}
-.days .title{margin:1px 0 0; font-size:12px; color:var(--gold); font-weight:600}
-.days .body ul{list-style:none; margin:4px 0 0; padding:0}
-.days .body li{display:block; border:0; padding:1px 0 1px 12px; font-size:12px;
-  color:var(--quiet); position:relative}
-.days .body li::before{content:"·"; position:absolute; left:3px}
-/* Прозрачность съедает контраст молча: 5.6:1 при opacity .6 превращается в
-   2.9:1, и меряется уже не то, что записано в переменной. Поэтому «свободно»
-   приглушено курсивом, а не прозрачностью. */
-.days .empty{margin:2px 0 0; font-size:11.5px; color:var(--quiet); font-style:italic}
-.days .move .date b{color:var(--gold)}
-.days .clash .date b{color:var(--fire)}
+/* ── дни: отрезок города развёрнут, день свёрнут
+   ────────────────────────────────────────────────────────────────────
+   Шестнадцать дней и сотня пунктов — самый длинный раздел страницы, и он
+   единственный, у которого две ступени свёртки. Причина её: «слишком много
+   листать вниз». Открытый отрезок города стоит шестнадцать строк, открытые
+   дни — сто.
+
+   Прозрачность здесь не используется нигде: `opacity` съедает контраст молча,
+   и 5.6:1 из переменной превращается в 2.9:1 на экране. Приглушённое
+   приглушено цветом и кеглем, а не прозрачностью. */
+.plan{max-width:940px}
+.run{border-top:1px solid var(--hair)}
+.run:first-child{border-top:0}
+.run > summary{cursor:pointer; list-style:none; display:flex; flex-wrap:wrap;
+  align-items:baseline; gap:4px 10px; padding:9px 0 8px; min-height:34px}
+.run > summary::-webkit-details-marker{display:none}
+/* Цвет города — тот же, что в нитке и в карточке: полоска слева, а не заливка
+   под текстом, иначе контраст пришлось бы мерить у каждого тона отдельно. */
+.run > summary .ct{font-size:13px; font-weight:700; color:var(--bronze);
+  border-left:3px solid var(--tone); padding-left:8px}
+.run > summary .sp{font-size:11.5px; color:var(--quiet)}
+.run > summary .n{font-size:10px; letter-spacing:.08em; color:var(--quiet); margin-left:auto}
+.rdays{padding:0 0 10px 11px}
+.day{border-bottom:1px solid var(--hair)}
+.day:last-child{border-bottom:0}
+.day > summary{cursor:pointer; list-style:none; display:flex; align-items:center;
+  gap:11px; padding:7px 2px; min-height:34px}
+.day > summary::-webkit-details-marker{display:none}
+.day > summary:hover .ttl{color:var(--bronze)}
+.dt{width:30px; flex:none; text-align:center}
+.dt b{display:block; font-family:var(--serif); font-size:19px; line-height:1; color:var(--ink)}
+.dt i{font-style:normal; font-size:10px; color:var(--quiet)}
+.day > summary .ttl{font-size:13.5px; font-weight:600; flex:1 1 auto; min-width:0}
+.day > summary .cnt{flex:none; font-size:10px; color:var(--quiet);
+  border:1px solid var(--hair); border-radius:20px; padding:2px 7px}
+.day.move .dt b{color:var(--gold)}
+.day.clash .dt b,.day.noted .dt b{color:var(--fire)}
+.dbody{padding:2px 0 12px 41px}
+.dnote{margin:0 0 8px; font-size:12px; color:var(--deep); font-style:italic}
+.items{list-style:none; margin:0; padding:0}
+.it{display:flex; gap:11px; align-items:baseline; padding:5px 0;
+  border-bottom:1px solid var(--hair)}
+.it:last-child{border-bottom:0}
+.it .tm{flex:none; width:88px; font-family:var(--num); font-size:11px; color:var(--quiet)}
+.it .wh{flex:1 1 auto; min-width:0}
+.it .nm{font-size:13.5px; color:var(--ink)}
+a.nm{color:var(--bronze); text-decoration:underline; text-decoration-color:var(--hair);
+  text-underline-offset:2px}
+.it .marks{display:inline}
+.mk{display:inline-block; margin-left:7px; font-size:10px; letter-spacing:.06em;
+  border-radius:20px; padding:1px 7px; white-space:nowrap}
+.mk.bk{background:var(--sand); color:var(--gold); border:1px solid var(--hair)}
+.mk.site{color:var(--gold); border:1px solid var(--gold); text-decoration:none}
+.mk.tr{color:var(--quiet); border:1px dashed var(--rule); white-space:normal}
+.it .nt{display:block; font-size:11.5px; color:var(--quiet); font-style:normal}
+/* Её пункт помечен ромбом — тем же, что и её записи в карточках городов:
+   один язык для «это вписала я» во всех разделах. */
+.it.mine .nm::before{content:"◆ "; font-size:8.5px; color:var(--bronze)}
+.it.dragging{opacity:1; background:var(--sand); border-radius:6px}
+.items.over{background:var(--sand); border-radius:6px; outline:1px dashed var(--rule)}
+.it.fresh{background:var(--sand); border-radius:6px}
+/* Пустой день обязан оставаться мишенью: список нулевой высоты поймать мышью
+   нельзя, и «перенести сюда» превратилось бы в «перенести почти сюда». */
+.items:empty{min-height:28px; border:1px dashed var(--hair); border-radius:6px}
+.grip{flex:none; cursor:grab; color:var(--rule); font-size:12px; line-height:1;
+  padding:0 1px; user-select:none}
+.acts{flex:none; display:flex; align-items:center; gap:4px; margin-left:auto}
+.acts button,.acts select{font-family:inherit; font-size:11px; color:var(--quiet);
+  background:none; border:1px solid var(--hair); border-radius:6px; padding:3px 7px;
+  cursor:pointer; min-height:26px}
+.acts button:hover{color:var(--ink); border-color:var(--rule)}
+.acts .step{font-size:12px; line-height:1; padding:3px 6px}
+.acts select{max-width:104px}
+.addday{margin-top:9px; background:none; border:1px dashed var(--rule); border-radius:8px;
+  padding:7px 12px; font-size:12px; color:var(--quiet); font-family:inherit; cursor:pointer;
+  min-height:32px}
+.daysays{color:var(--fire); margin:-8px 0 12px}
+/* Форма пункта — та же, что у записей, но своя: у пункта дня нет ни цены, ни
+   состояния оплаты, и показывать ей пустые поля «сколько стоит» значило бы
+   спрашивать про деньги там, где их нет. */
+.itemform{margin:9px 0 0; padding:11px 13px; background:var(--card);
+  border:1px solid var(--hair); border-radius:10px;
+  display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:9px 12px}
+.itemform .what{grid-column:1/-1; margin:0; font-family:var(--serif); font-size:15px}
+.itemform .f{display:flex; flex-direction:column; gap:3px; min-width:0}
+.itemform .f.wide{grid-column:1/-1}
+.itemform label{font-size:9.5px; letter-spacing:.12em; text-transform:uppercase;
+  color:var(--quiet)}
+.itemform input{font-family:inherit; font-size:14px; color:var(--ink);
+  background:var(--paper); border:1px solid var(--rule); border-radius:7px;
+  padding:8px 9px; min-height:38px; width:100%; min-width:0}
+.itemform .go{grid-column:1/-1; display:flex; flex-wrap:wrap; align-items:center; gap:9px 12px}
+.itemform .says{font-size:12px; color:var(--fire)}
 /* `#luggage` в начале не для красоты: без него правило доставало и ряд
    переездов в нитке, у которого тот же класс. Высоты это не меняло (нижний
    отступ там схлопывался с отступом самой нитки — проверено измерением, а не
@@ -1804,7 +2119,6 @@ input:checked ~ .txt{color:var(--deep); text-decoration:line-through}
 }
 @media (min-width:1000px){
   .masthead h1{font-size:58px}
-  .days{columns:2; column-gap:34px}
   .todo-cols{grid-template-columns:repeat(4,1fr)}
 }
 @media (max-width:1000px){
@@ -1861,6 +2175,19 @@ input:checked ~ .txt{color:var(--deep); text-decoration:line-through}
   .pane .f.wide{grid-column:span 1}
   .stayfine > summary{min-height:44px; align-content:center}
   .more > summary{min-height:44px; padding:13px 2px}
+  /* Дни на телефоне: свёртки и ручки — под палец. Таскать мышью тут нечем,
+     и это не потеря: переносит она с компьютера, а «в день →» работает
+     одинаково везде. */
+  .run > summary,.day > summary{min-height:44px; padding:11px 2px}
+  .rdays{padding-left:4px}
+  .dbody{padding-left:14px}
+  .it{flex-wrap:wrap}
+  .it .tm{width:auto; flex:0 0 auto}
+  .acts{margin-left:0; flex:1 1 100%; flex-wrap:wrap}
+  .acts button,.acts select{min-height:36px; display:inline-flex; align-items:center}
+  .grip{display:none}
+  .addday{min-height:36px}
+  .itemform{grid-template-columns:1fr}
   .rows dd{font-size:12.5px}
   .city .inner,.city .cap{padding-left:16px; padding-right:16px}
 }
@@ -2475,9 +2802,556 @@ APP_JS = """
 """
 
 
+# ─────────────────────────────────────────── её дни
+
+DAYS_JS = """
+(function(){
+  "use strict";
+
+  /* Раздел дней: тасовать, переносить, дописывать, убирать.
+
+     **Строки не рисуются заново — они двигаются.** Всё, что видно в пункте
+     (ссылка на карту, метка «бронировать», сайт, отсылка к переездам), уже
+     собрано питоном в `by_day`. Нарисовать то же самое второй раз здесь
+     значило бы завести два описания одной вещи, и разойтись они успели бы
+     молча: питон бы поправили, а браузер нет. Поэтому расстановка — это
+     `appendChild` уже существующего узла, а не разметка строкой.
+
+     Своё она рисует только там, где питону нечего было рисовать: её
+     собственные пункты и её правки поверх файлового текста.
+
+     **Ручек нет, пока хранилище не ответило.** Кнопка «убрать», которой некуда
+     нажать, — обещание, которого страница не может сдержать; а «убрал, но не
+     сохранилось» на её плане стоит дороже, чем отсутствие кнопки. Пока
+     расстановка не доехала, раздел остаётся тем, что собрано: планом из файла
+     со ссылками, и строкой о том, почему он такой.
+
+     **Ручки заводятся на день при первом открытии.** Шестнадцать списков дат
+     по числу дней на каждый из сотни пунктов — это полторы тысячи узлов,
+     созданных ради дня, в который она, может, и не заглянет. */
+
+  var box = document.getElementById("japan-data");
+  var plan = document.querySelector("[data-plan]");
+  if (!box || !plan) return;
+
+  var DAYS = JSON.parse(box.textContent).days || [];
+  var API = "/api/days";
+  var MAPS = "https://www.google.com/maps/search/?api=1&query=";
+
+  var says = document.querySelector("[data-days-says]");
+  var tag = document.querySelector('[data-tag="days"]');
+  var state = { order: {}, own: {}, edits: {}, live: false };
+  /* Каким пункт приехал из файла. Снимается один раз, до первой правки:
+     читать «как было» из уже переписанной строки — это способ потерять
+     файловый текст в тот момент, когда она снимет свою правку. */
+  var seed = {};
+  var nodes = {};
+  var editing = null;
+
+  function el(name, cls, text){
+    var node = document.createElement(name);
+    if (cls) node.className = cls;
+    if (text !== undefined && text !== null) node.textContent = text;
+    return node;
+  }
+  function plural(n, one, few, many){
+    var a = Math.abs(n) % 100, b = a % 10;
+    if (a > 10 && a < 20) return many;
+    if (b > 1 && b < 5) return few;
+    if (b === 1) return one;
+    return many;
+  }
+  function tell(words){
+    if (!says) return;
+    says.textContent = words || "";
+    says.hidden = !words;
+  }
+
+  /* ── чтение и рисование строки */
+
+  function mapOf(node){
+    var href = node && node.getAttribute ? node.getAttribute("href") : null;
+    if (!href) return "";
+    var at = href.indexOf("query=");
+    if (at < 0) return "";
+    try { return decodeURIComponent(href.slice(at + 6).replace(/\\+/g, " ")); }
+    catch (e) { return ""; }
+  }
+
+  function readItem(li){
+    var title = li.querySelector('[data-part="title"]');
+    var time = li.querySelector('[data-part="time"]');
+    var note = li.querySelector('[data-part="note"]');
+    return {
+      id: li.getAttribute("data-item"),
+      time: time ? time.textContent : "",
+      title: title ? title.textContent : "",
+      note: note && !note.hidden ? note.textContent : "",
+      map: mapOf(title)
+    };
+  }
+
+  /* Название — ссылка ровно тогда, когда есть что искать на карте. Она
+     дописала поисковую строку — строка становится ссылкой; стёрла — перестаёт.
+     Подменять сам узел приходится потому, что «а» и «span» это разные теги, а
+     ссылка без адреса — самая тихая из поломок: выглядит как ссылка, ведёт в
+     никуда. */
+  function setTitle(li, title, map){
+    var wh = li.querySelector(".wh");
+    var was = li.querySelector('[data-part="title"]');
+    var want = map ? "A" : "SPAN";
+    var node = was;
+    if (!was || was.tagName !== want) {
+      node = document.createElement(map ? "a" : "span");
+      node.className = "nm";
+      node.setAttribute("data-part", "title");
+      if (was) wh.replaceChild(node, was);
+      else wh.insertBefore(node, wh.firstChild);
+    }
+    node.textContent = title;
+    if (map) {
+      node.setAttribute("href", MAPS + encodeURIComponent(map));
+      node.setAttribute("target", "_blank");
+      node.setAttribute("rel", "noopener");
+    } else {
+      node.removeAttribute("href");
+      node.removeAttribute("target");
+      node.removeAttribute("rel");
+    }
+  }
+
+  function paintItem(li, item){
+    var time = li.querySelector('[data-part="time"]');
+    if (time) time.textContent = item.time || "";
+    setTitle(li, item.title || "", item.map || "");
+    var note = li.querySelector('[data-part="note"]');
+    if (note) {
+      note.textContent = item.note || "";
+      note.hidden = !item.note;
+    }
+  }
+
+  function shell(id){
+    var li = el("li", "it mine");
+    li.setAttribute("data-item", id);
+    var time = el("span", "tm");
+    time.setAttribute("data-part", "time");
+    li.appendChild(time);
+    var wh = el("span", "wh");
+    wh.appendChild(el("span", "marks"));
+    var note = el("em", "nt");
+    note.setAttribute("data-part", "note");
+    wh.appendChild(note);
+    li.appendChild(wh);
+    return li;
+  }
+
+  Array.prototype.forEach.call(plan.querySelectorAll(".it"), function(li){
+    var id = li.getAttribute("data-item");
+    nodes[id] = li;
+    seed[id] = readItem(li);
+  });
+
+  /* ── разговор с хранилищем */
+
+  function ask(method, body){
+    var init = { method: method, credentials: "same-origin", cache: "no-store" };
+    if (body) {
+      init.headers = { "content-type": "application/json" };
+      init.body = JSON.stringify(body);
+    }
+    return fetch(API, init).then(function(response){
+      return response.json().then(function(said){ return { response: response, said: said }; },
+        function(){ return { response: response, said: {} }; });
+    }).then(function(got){
+      if (!got.response.ok || got.said.ok === false) {
+        throw new Error(got.said.why || ("не получилось (" + got.response.status + ")"));
+      }
+      return got.said;
+    });
+  }
+
+  /* Ответ на правку — вся расстановка целиком, и раскладываем мы именно её.
+     Считать порядок второй раз здесь нельзя: два способа разложить одно и то
+     же дадут два разных порядка с одним именем. */
+  function adopt(said){
+    state.order = said.order || {};
+    state.own = said.own || {};
+    state.edits = said.edits || {};
+    state.live = true;
+    tell("");
+    lay();
+  }
+
+  function lay(){
+    var placed = {};
+    DAYS.forEach(function(day){
+      var list = plan.querySelector('[data-day-items="' + day.date + '"]');
+      if (!list) return;
+      (state.order[day.date] || []).forEach(function(id){
+        var mine = state.own[id];
+        var li = nodes[id];
+        if (!li) {
+          if (!mine) return;              /* ни файлового пункта, ни её — нечего показать */
+          li = nodes[id] = shell(id);
+        }
+        paintItem(li, mine || merged(id));
+        list.appendChild(li);             /* appendChild переносит, а не копирует */
+        placed[id] = true;
+        /* Список дат у переехавшего пункта обязан показывать день, в котором
+           он теперь лежит: иначе он предлагает «перенести» туда, где пункт и
+           так стоит, а следующий перенос считается от неверного места. */
+        var pick = li.querySelector(".acts select");
+        if (pick) pick.value = day.date;
+      });
+      /* Ручки заводятся только в уже открытых днях: дописанный пункт обязан
+         иметь их сразу, а закрытый день по-прежнему не платит за то, во что
+         она не заглядывала. */
+      var fold = plan.querySelector('[data-day="' + day.date + '"]');
+      if (state.live && fold && fold.open) wireDay(fold);
+    });
+
+    /* Убранное уходит со страницы, но остаётся в нашей памяти: она может
+       вернуть его правкой файла, и тогда узел уже есть. */
+    Object.keys(nodes).forEach(function(id){
+      if (!placed[id] && nodes[id].parentNode) nodes[id].parentNode.removeChild(nodes[id]);
+    });
+    counts();
+  }
+
+  function merged(id){
+    var base = seed[id] || { id: id, time: "", title: "", note: "", map: "" };
+    var patch = state.edits[id];
+    if (!patch) return base;
+    var out = { id: id, time: base.time, title: base.title, note: base.note, map: base.map };
+    ["time", "title", "note", "map"].forEach(function(key){
+      if (typeof patch[key] === "string") out[key] = patch[key];
+    });
+    return out;
+  }
+
+  function counts(){
+    var total = 0;
+    Array.prototype.forEach.call(plan.querySelectorAll("[data-day-items]"), function(list){
+      var n = list.children.length;
+      total += n;
+      var day = list.closest(".day");
+      var badge = day ? day.querySelector("[data-count]") : null;
+      if (badge) badge.textContent = n;
+    });
+    if (tag) {
+      tag.textContent = DAYS.length + " " + plural(DAYS.length, "день", "дня", "дней")
+        + " · " + total + " " + plural(total, "пункт", "пункта", "пунктов");
+    }
+  }
+
+  function fail(error){
+    tell("не сохранилось: " + error.message);
+  }
+
+  function send(method, body, andThen){
+    return ask(method, body).then(function(said){
+      adopt(said);
+      if (andThen) andThen(said);
+    }).catch(fail);
+  }
+
+  /* ── ручки: надёжные сначала */
+
+  function dayOf(li){
+    var list = li.closest("[data-day-items]");
+    return list ? list.getAttribute("data-day-items") : "";
+  }
+
+  function step(li, delta){
+    var list = li.closest("[data-day-items]");
+    if (!list) return;
+    var kids = Array.prototype.slice.call(list.children);
+    var at = kids.indexOf(li) + delta;
+    if (at < 0 || at >= kids.length) return;
+    send("PATCH", { id: li.getAttribute("data-item"), to: dayOf(li), at: at });
+  }
+
+  var picker = null;
+  function daySelect(){
+    if (!picker) {
+      picker = document.createElement("select");
+      picker.setAttribute("aria-label", "перенести в день");
+      DAYS.forEach(function(day){
+        var option = document.createElement("option");
+        option.value = day.date;
+        option.textContent = day.label;
+        picker.appendChild(option);
+      });
+    }
+    return picker.cloneNode(true);
+  }
+
+  function wireItem(li, date){
+    if (li.getAttribute("data-wired") === "yes") return;
+    li.setAttribute("data-wired", "yes");
+
+    var grip = el("span", "grip", "\\u2059");
+    grip.setAttribute("aria-hidden", "true");
+    li.insertBefore(grip, li.firstChild);
+    li.setAttribute("draggable", "true");
+
+    var acts = el("span", "acts");
+    var up = el("button", "step", "\\u2191");
+    up.type = "button";
+    up.title = "выше";
+    up.addEventListener("click", function(){ step(li, -1); });
+    var down = el("button", "step", "\\u2193");
+    down.type = "button";
+    down.title = "ниже";
+    down.addEventListener("click", function(){ step(li, 1); });
+
+    /* Список дат — способ, который работает всегда. Перетащить с 6 января на
+       17-е нельзя физически: между ними два экрана прокрутки. */
+    var to = daySelect();
+    to.value = date;
+    to.addEventListener("change", function(){
+      send("PATCH", { id: li.getAttribute("data-item"), to: to.value });
+    });
+
+    var edit = el("button", "ed", "правка");
+    edit.type = "button";
+    edit.addEventListener("click", function(){ openForm(dayOf(li), li); });
+
+    var drop = el("button", "rm", "убрать");
+    drop.type = "button";
+    drop.addEventListener("click", function(){
+      var item = state.own[li.getAttribute("data-item")] || merged(li.getAttribute("data-item"));
+      if (!window.confirm("Убрать «" + item.title + "» из этого дня?")) return;
+      send("DELETE", { id: li.getAttribute("data-item") });
+    });
+
+    acts.appendChild(up);
+    acts.appendChild(down);
+    acts.appendChild(to);
+    acts.appendChild(edit);
+    acts.appendChild(drop);
+    li.appendChild(acts);
+
+    li.addEventListener("dragstart", function(event){
+      dragging = li;
+      li.classList.add("dragging");
+      if (event.dataTransfer) {
+        event.dataTransfer.effectAllowed = "move";
+        try { event.dataTransfer.setData("text/plain", li.getAttribute("data-item")); }
+        catch (e) { /* Safari бывает против — на перенос это не влияет */ }
+      }
+    });
+    li.addEventListener("dragend", function(){
+      li.classList.remove("dragging");
+      dragging = null;
+      Array.prototype.forEach.call(plan.querySelectorAll(".over"), function(x){
+        x.classList.remove("over");
+      });
+    });
+  }
+
+  /* ── перетаскивание: приятное поверх надёжного */
+
+  var dragging = null;
+
+  function spotIn(list, y){
+    var kids = Array.prototype.filter.call(list.children, function(x){ return x !== dragging; });
+    for (var i = 0; i < kids.length; i++) {
+      var box = kids[i].getBoundingClientRect();
+      if (y < box.top + box.height / 2) return i;
+    }
+    return kids.length;
+  }
+
+  plan.addEventListener("dragover", function(event){
+    if (!dragging) return;
+    var list = event.target.closest ? event.target.closest("[data-day-items]") : null;
+    var head = event.target.closest ? event.target.closest(".day > summary") : null;
+    if (!list && !head) return;
+    event.preventDefault();
+    if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
+    var mark = list || head;
+    if (!mark.classList.contains("over")) mark.classList.add("over");
+  });
+  plan.addEventListener("dragleave", function(event){
+    var mark = event.target.closest
+      ? (event.target.closest("[data-day-items]") || event.target.closest(".day > summary"))
+      : null;
+    if (mark) mark.classList.remove("over");
+  });
+  plan.addEventListener("drop", function(event){
+    if (!dragging) return;
+    var list = event.target.closest ? event.target.closest("[data-day-items]") : null;
+    var head = event.target.closest ? event.target.closest(".day > summary") : null;
+    if (!list && !head) return;
+    event.preventDefault();
+    var id = dragging.getAttribute("data-item");
+    if (list) {
+      send("PATCH", { id: id, to: list.getAttribute("data-day-items"), at: spotIn(list, event.clientY) });
+    } else {
+      /* Брошено на заголовок свёрнутого дня — значит «в конец этого дня»:
+         внутрь закрытого дня прицелиться нечем. */
+      var day = head.closest(".day");
+      send("PATCH", { id: id, to: day.getAttribute("data-day") });
+      day.open = true;
+    }
+  });
+
+  /* ── форма пункта */
+
+  var form = null;
+  function makeForm(){
+    form = document.createElement("form");
+    form.className = "itemform";
+    form.innerHTML =
+      '<p class="what" data-what></p>'
+      /* `required` тут нет нарочно. У пункта из плана пустое название значит
+         «вернуть как в плане» — это единственный способ снять свою правку, и
+         браузерная проверка «поле обязательно» заперла бы её навсегда. Пустое
+         название у её собственного пункта отбивает хранилище, и говорит оно
+         это словами, а не всплывающей подсказкой поверх поля. */
+      + '<div class="f wide"><label data-title-label>что это</label>'
+      + '<input name="title" maxlength="120" placeholder="например: кофейня у реки"></div>'
+      + '<div class="f"><label>во сколько</label>'
+      + '<input name="time" maxlength="40" placeholder="можно пусто"></div>'
+      + '<div class="f"><label>подробность</label>'
+      + '<input name="note" maxlength="200" placeholder="необязательно"></div>'
+      + '<div class="f wide"><label>как искать на карте</label>'
+      + '<input name="map" maxlength="120" placeholder="точное название — станет ссылкой"></div>'
+      + '<div class="go"><button type="submit" class="save">Сохранить</button>'
+      + '<button type="button" class="drop" data-cancel>Отмена</button>'
+      + '<span class="says" data-says role="status"></span></div>';
+    form.querySelector("[data-cancel]").addEventListener("click", closeForm);
+    form.addEventListener("submit", submit);
+    return form;
+  }
+
+  function field(name){ return form.elements[name]; }
+
+  function openForm(date, li){
+    if (!form) makeForm();
+    var day = plan.querySelector('[data-day="' + date + '"]');
+    if (!day) return;
+    day.open = true;
+    day.querySelector(".dbody").appendChild(form);
+    editing = li ? { id: li.getAttribute("data-item"), date: date } : { id: null, date: date };
+    var item = li
+      ? (state.own[editing.id] || merged(editing.id))
+      : { time: "", title: "", note: "", map: "" };
+    /* Пункт из плана можно вернуть как был — и она должна об этом узнать из
+       формы, а не догадаться. Свой возвращать не к чему: кроме её текста, у
+       него ничего нет. */
+    var fromPlan = li && !state.own[editing.id];
+    form.querySelector("[data-what]").textContent = li
+      ? (fromPlan ? "Правка пункта из плана" : "Правка своего пункта")
+      : "Новый пункт в этот день";
+    form.querySelector("[data-title-label]").textContent = fromPlan
+      ? "что это · пусто — вернуть как в плане"
+      : "что это";
+    field("title").value = item.title || "";
+    field("time").value = item.time || "";
+    field("note").value = item.note || "";
+    field("map").value = item.map || "";
+    form.querySelector("[data-says]").textContent = "";
+    field("title").focus();
+  }
+
+  function closeForm(){
+    editing = null;
+    if (form && form.parentNode) form.parentNode.removeChild(form);
+  }
+
+  function submit(event){
+    event.preventDefault();
+    if (!editing) return;
+    var body = {
+      title: field("title").value,
+      time: field("time").value,
+      note: field("note").value,
+      map: field("map").value
+    };
+    var save = form.querySelector(".save");
+    var line = form.querySelector("[data-says]");
+    save.disabled = true;
+    line.textContent = "сохраняю…";
+    var was = editing;
+    var sending = was.id
+      ? ask("PATCH", Object.assign({ id: was.id }, body))
+      : ask("POST", Object.assign({ date: was.date }, body));
+    sending.then(function(said){
+      adopt(said);
+      closeForm();
+      var fresh = plan.querySelector('[data-item="' + (was.id || said.added) + '"]');
+      if (fresh) {
+        fresh.classList.add("fresh");
+        window.setTimeout(function(){ fresh.classList.remove("fresh"); }, 2000);
+      }
+    }).catch(function(error){
+      line.textContent = error.message;
+    }).then(function(){ save.disabled = false; });
+  }
+
+  /* ── день заводит ручки при первом открытии
+
+     Открыть день можно раньше, чем доедет хранилище (ближайший раскрывается
+     сразу), — поэтому заводит ручки не только открытие, но и приезд
+     расстановки. Обе дороги ведут сюда, и обе безопасны дважды: `data-wired`
+     стоит и на дне, и на строке. */
+
+  function wireDay(day){
+    /* Строки перебираются на каждом заходе, а не только на первом: пункт,
+       который она сейчас дописала, обязан получить ручки сразу. Дважды это не
+       сработает — `data-wired` стоит на самой строке. Так и вскрылось: свежий
+       пункт приезжал без кнопок и оживал только перезагрузкой. */
+    var date = day.getAttribute("data-day");
+    Array.prototype.forEach.call(day.querySelectorAll(".it"), function(li){
+      wireItem(li, date);
+    });
+    if (day.getAttribute("data-wired") === "yes") return;
+    day.setAttribute("data-wired", "yes");
+    var add = el("button", "addday", "+ пункт в этот день");
+    add.type = "button";
+    add.addEventListener("click", function(){ openForm(date, null); });
+    day.querySelector(".dbody").appendChild(add);
+  }
+
+  Array.prototype.forEach.call(plan.querySelectorAll(".day"), function(day){
+    day.addEventListener("toggle", function(){
+      if (day.open && state.live) wireDay(day);
+    });
+  });
+
+  /* ── ближайший день открыт сразу
+
+     «Ближайший» стареет каждые сутки, а страница собирается редко — поэтому
+     день выбирает браузер, а не сборка. */
+  var today = new Date();
+  var iso = today.getFullYear() + "-"
+    + String(today.getMonth() + 1).padStart(2, "0") + "-"
+    + String(today.getDate()).padStart(2, "0");
+  var soon = null;
+  DAYS.forEach(function(day){ if (!soon && day.date >= iso) soon = day.date; });
+  if (!soon && DAYS.length) soon = DAYS[DAYS.length - 1].date;
+  if (soon) {
+    var open = plan.querySelector('[data-day="' + soon + '"]');
+    if (open) open.open = true;
+  }
+
+  counts();
+  ask("GET").then(adopt).catch(function(error){
+    state.live = false;
+    tell("твои перестановки не загрузились (" + error.message
+      + ") — здесь план, как его собрали, и двигать его сейчас нечем");
+  });
+})();
+"""
+
+
 # ─────────────────────────────────────────── страница
 
-def render(trip: dict) -> str:
+def render(trip: dict, plan: list | None = None) -> str:
+    plan = load_plan() if plan is None else plan
     stays = sorted(trip["stays"], key=lambda s: (s["checkin"]["date"], s["checkout"]["date"]))
     alerts = trip.get("alerts", [])
     places = trip.get("places", [])
@@ -2503,13 +3377,14 @@ def render(trip: dict) -> str:
   {city_cards(all_legs, alerts, places, trip.get("cancelled", []))}
   {adder(trip, all_legs)}
   {ledger(trip, stays, all_legs)}
-  {more_block(trip, stays, alerts)}
+  {more_block(trip, stays, alerts, plan, all_legs)}
   {colophon(trip)}
 </div>
-{island(trip, stays, all_legs)}
+{island(trip, stays, all_legs, plan)}
 <script>{MONEY_JS}
 {JS}
-{APP_JS}</script>
+{APP_JS}
+{DAYS_JS}</script>
 </body>
 </html>
 """
@@ -2558,12 +3433,44 @@ def write_stays(all_legs: list) -> list[str]:
     return ids
 
 
+def write_plan(plan: list) -> int:
+    """План по дням — для двери: список дней и файловый порядок пунктов.
+
+    Ручке `/api/days` он нужен ровно для двух вещей: знать, что такой день в
+    поездке есть (в несуществующий пункт не переносится), и знать файловое
+    место пункта, чтобы дописанное в план встало между завтраком и музеем, а
+    не в хвост дня.
+
+    Текста здесь нет нарочно — только id. Название, время и ссылки живут в
+    собранной странице, и второй их экземпляр рядом с хранилищем означал бы,
+    что поправка Блэйза доезжает до неё через раз: там, где выложили обе
+    копии, — доезжает, а где одну — нет.
+
+    Собирается сборкой и лежит в git видимым куском, как `_stays.js`: рядом с
+    ручкой на Cloudflare нет ни файла с данными, ни питона.
+    """
+    body = json.dumps(
+        [{"date": x["date"], "items": [i["id"] for i in x["items"]]} for x in plan],
+        ensure_ascii=False,
+    )
+    (SITE / "functions" / "api" / "_plan.js").write_text(
+        "/* Собирается `build.py` — руками не править.\n"
+        "\n"
+        "   Дни поездки и файловый порядок пунктов в них. Только id: текст живёт\n"
+        "   в собранной странице, а расстановка — в хранилище. */\n"
+        f"\nexport const PLAN = {body};\n",
+        encoding="utf-8",
+    )
+    return sum(len(x["items"]) for x in plan)
+
+
 def main() -> int:
     trip = json.loads(DATA.read_text(encoding="utf-8"))
+    plan = load_plan()
     load_fx(trip)
 
     try:
-        said = check(trip)
+        said = check(trip, plan)
     except Failed as err:
         print(f"✗ проверка не прошла: {err}", file=sys.stderr)
         return 1
@@ -2581,11 +3488,15 @@ def main() -> int:
                                   key=lambda s: (s["checkin"]["date"], s["checkout"]["date"]))))
     print("· города, к которым можно привязать место: " + ", ".join(ids))
 
+    # План для двери — по той же причине и в том же месте: выложить вчерашний
+    # значит отбить перенос в день, который на странице уже есть.
+    print(f"· дней в плане: {len(plan)}, пунктов: {write_plan(plan)}")
+
     if DIST.exists():
         shutil.rmtree(DIST)
     DIST.mkdir(parents=True)
 
-    (DIST / "index.html").write_text(render(trip), encoding="utf-8")
+    (DIST / "index.html").write_text(render(trip, plan), encoding="utf-8")
     (DIST / "404.html").write_text(NOT_FOUND, encoding="utf-8")
 
     # Дверь и заголовки едут внутрь выкладываемой папки: wrangler собирает
