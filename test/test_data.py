@@ -245,8 +245,18 @@ class PageShowsIt(unittest.TestCase):
         """Ночь 14-го оплачена дважды и дважды же посчитана — так решила Ни."""
         # Разряды разделены узким неразрывным пробелом: сравниваем по цифрам,
         # а не по тому, каким именно пробелом их развели.
+        #
+        # 290675, а не 297912: итог сменился 23 августа вместе с новым
+        # подтверждением lyf Ginza. Проверка этого не заметила и осталась
+        # зелёной — «297 912» до сих пор стоит примером в пояснении внутри
+        # `money.js`, и поиск по всей странице находил комментарий к коду
+        # вместо суммы под чеком. Поэтому ищем теперь в самом чеке.
+        check = re.search(r'<div class="total" id="check">(.*?)<div class="bar"',
+                          self.html, re.S).group(1)
+        self.assertIn("290675", re.sub(r"\s+", "", check), "итог под чеком")
+        self.assertNotIn("297912", re.sub(r"\s+", "", check), "старый итог под чеком")
         digits = re.sub(r"\s+", "", self.html)
-        for amount in ("297912", "27160", "121800"):
+        for amount in ("290675", "27160", "121800"):
             self.assertIn(amount, digits, amount)
 
     def test_every_stay_has_phone_map_and_cancellation(self):
@@ -264,7 +274,14 @@ class PageShowsIt(unittest.TestCase):
             self.assertIn("JST", block)
 
     def test_totals_are_rendered_not_typed(self):
-        self.assertIn("297 912", self.html.replace(" ", " "))
+        # Считается, а не пишется руками: сумма из данных обязана совпасть с
+        # тем, что стоит под чеком. Прибитого числа здесь больше нет нарочно —
+        # именно оно и протухло 23 августа, оставшись зелёным на комментарии
+        # внутри money.js вместо самой суммы.
+        total = sum(s["total_jpy"] for s in REAL["stays"])
+        check = re.search(r'<div class="total" id="check">(.*?)<div class="bar"',
+                          self.html, re.S).group(1)
+        self.assertIn(str(total), re.sub(r"\s+", "", check))
 
     def test_every_day_of_the_trip_is_listed(self):
         """4 января — день вылета: поездка начинается им, а не прилётом."""
@@ -468,6 +485,145 @@ class SheWritesHereHerself(unittest.TestCase):
         self.assertNotIn("вся поездка", block,
                          "заголовок «вся поездка» появляется вместе с её записями, не раньше")
         self.assertIn("data-parts hidden", block, "разбивка чека пуста, пока считать нечего")
+
+
+class WhatCostsMoneyIsOnTop(unittest.TestCase):
+    """Сроки отмены, переезды и честная строка под чеком.
+
+    Три вещи, у которых цена ошибки одинаковая: пропущенный срок — это полная
+    стоимость брони, невидимый переезд — это опоздание на поезд, а итог,
+    прочитанный как полный, — это неверный расчёт всей поездки.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.html = render(copy.deepcopy(REAL))
+
+    # ── сроки
+
+    def test_the_nearest_deadline_is_in_the_masthead(self):
+        """Ближайший срок стоит в шапке, а не четвёртой строкой в карточке."""
+        head = re.search(r'<details class="deadlines">(.*?)</details>', self.html, re.S)
+        self.assertIsNotNone(head, "блока сроков в шапке нет")
+        summary = re.search(r"<summary>(.*?)</summary>", head.group(1), re.S).group(1)
+        earliest = min(REAL["stays"], key=lambda s: s["cancel"]["free_until"])
+        self.assertIn(earliest["cancel"]["free_until"], summary,
+                      "наверху обязан стоять самый ранний срок")
+        # День и месяц разведены неразрывным пробелом — сравниваем по словам.
+        self.assertIn("18 декабря 2026", " ".join(summary.split()),
+                      "18 декабря — OMO5 Киото; дата прибита, чтобы подмена краснела")
+        # Остальные никуда не делись — они под стрелкой, а не выкинуты.
+        for s in REAL["stays"]:
+            self.assertIn(s["cancel"]["free_until"], head.group(1), s["name"])
+        self.assertEqual(head.group(1).count("<li data-deadline="),
+                         len(REAL["stays"]) - 1)
+
+    def test_the_countdown_is_not_frozen_into_the_page(self):
+        """«Осталось N дней» в разметке — это число, верное ровно сутки.
+
+        Страница живёт неделями между сборками, поэтому остаток считает
+        браузер. В HTML уезжает только дата: она не стареет.
+        """
+        head = re.search(r'<details class="deadlines">(.*?)</details>',
+                         self.html, re.S).group(1)
+        self.assertNotIn("осталось", head,
+                         "остаток дописывает браузер, а не сборка")
+        self.assertIn("jstDay", self.html, "дни считаются по японскому календарю")
+        self.assertNotIn("Math.ceil((when - Date.now())", self.html,
+                         "счёт по мгновениям давал лишний день в её пользу")
+
+    def test_a_deadline_that_is_not_the_earliest_on_top_is_caught(self):
+        """Сборка обязана назвать ближайший срок вслух — иначе подмену не видно."""
+        said = "\n".join(check(copy.deepcopy(REAL)))
+        self.assertIn("ближайший срок отмены: 2026-12-18", said)
+
+    # ── переезды
+
+    def test_transfers_stand_in_the_thread(self):
+        moves = re.findall(r'<div class="move has"[^>]*>(.*?)</div>', self.html, re.S)
+        self.assertEqual(len(moves), len(REAL["transfers"]))
+        joined = " ".join(moves)
+        for t in REAL["transfers"]:
+            self.assertIn(t["how"], joined, t["how"])
+            self.assertIn(t["hours"], joined, t["hours"])
+
+    def test_an_unconfirmed_price_is_a_range_and_says_it_is(self):
+        """Оценка показывается вилкой и знаком ≈, а не одним удобным числом.
+
+        24 августа Ни спросила «а посмотреть не можете что ли?» про экспресс до
+        Киносаки. Посмотрел: путеводители дают ¥4 500–5 300 за место, сервис
+        бронирования JR — «от ¥7 350». Выбрать одно значило бы выдать удобное
+        за подтверждённое, поэтому здесь вилка. Точного `jpy` у переезда
+        по-прежнему нет: подтверждением станет её касса, а не наш поиск.
+        """
+        kyoto_kinosaki = next(t for t in REAL["transfers"] if t["to"] == "Киносаки")
+        self.assertNotIn("jpy", kyoto_kinosaki, "подтверждённой цены у нас нет")
+        self.assertEqual(kyoto_kinosaki["estimate_jpy"], [5000, 7350])
+        block = re.search(r'<div class="move has"[^>]*>(?:(?!</div>).)*?'
+                          r'Киото → Киносаки(.*?)</div>', self.html, re.S).group(1)
+        self.assertIn('class="cost guess"', block)
+        self.assertIn("≈", block, "оценка обязана быть помечена знаком")
+        self.assertEqual(block.count("¥"), 2, "вилка показывается обеими границами")
+
+    def test_a_half_known_price_shows_the_hole_next_to_the_number(self):
+        """15 января знаем синкансэн и не знаем экспресс — видно и то, и то."""
+        back = next(t for t in REAL["transfers"] if t["from"] == "Киносаки")
+        self.assertEqual(back["jpy"], 13_970)
+        # `nocost` ушёл 24 августа: непокрытая половина перестала быть дырой и
+        # стала оценкой. Рядом обязаны стоять оба — точное число синкансэна и
+        # вилка экспресса, иначе одно прочтётся как цена всего переезда.
+        self.assertEqual(back["estimate_jpy"], [5000, 7350])
+        block = re.search(r'<div class="move has"[^>]*>(?:(?!</div>).)*?'
+                          r'Киносаки → Токио(.*?)</div>', self.html, re.S).group(1)
+        self.assertIn("13", re.sub(r"\s+", "", block))
+        self.assertIn("≈", block, "оценка экспресса стоит рядом с точным числом")
+        # Пустого поля здесь больше нет — на его месте оценка. Проверяем, что
+        # точное и приблизительное показаны **разными** знаками, иначе одно
+        # прочтётся как другое.
+        self.assertIn('class="cost guess"', block)
+        self.assertIn('class="cost"', block)
+
+    def test_a_transfer_on_a_day_nobody_moves_is_caught(self):
+        """Дата мимо — переезд, который тихо не покажется в нитке."""
+        data = broken()
+        data["transfers"][0]["date"] = "2027-01-10"
+        with self.assertRaises(Failed) as it:
+            check(data)
+        self.assertIn("никто никуда не едет", str(it.exception))
+
+    def test_a_transfer_naming_the_wrong_cities_is_caught(self):
+        """Подпись, которая врёт рядом с верной картинкой, хуже её отсутствия."""
+        data = broken()
+        data["transfers"][0]["to"] = "Осака"
+        with self.assertRaises(Failed) as it:
+            check(data)
+        self.assertIn("а по броням", str(it.exception))
+
+    # ── чего в итоге нет
+
+    def test_the_total_says_out_loud_that_it_is_not_everything(self):
+        block = re.search(r'<p class="notall">(.*?)</p>', self.html, re.S)
+        self.assertIsNotNone(block, "строки «чего в итоге нет» под чеком нет")
+        said = block.group(1)
+        for named in REAL["not_in_total"]:
+            self.assertIn(named, said, named)
+        # Строка стоит внутри чека и выше разбивки оплаты: в одном взгляде с
+        # цифрой, а не четырьмя строками ниже.
+        total = re.search(r'<div class="total" id="check">(.*?)<div class="bar"',
+                          self.html, re.S).group(1)
+        self.assertIn('class="notall"', total)
+
+    def test_a_number_in_that_line_is_caught(self):
+        """Число здесь — второй счёт рядом с первым, и разойдутся они молча."""
+        data = broken()
+        data["not_in_total"].append("метро — примерно ¥8 000")
+        with self.assertRaises(Failed) as it:
+            check(data)
+        self.assertIn("числам там не место", str(it.exception))
+
+    def test_the_suitcase_price_is_next_to_the_suitcase(self):
+        """Пересылка стоит денег и в чек не идёт — цена рядом с ней самой."""
+        self.assertIn(REAL["luggage"]["cost"], self.html)
 
 
 if __name__ == "__main__":

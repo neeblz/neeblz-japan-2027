@@ -226,6 +226,11 @@ def check(trip: dict) -> list[str]:
         cutoff = datetime.fromisoformat(s["cancel"]["free_until"])
         if cutoff.date() < today:
             said.append(f'⚠ {s["name"]}: бесплатная отмена уже прошла ({cutoff.date()})')
+    # Ближайший срок называется вслух при каждой сборке: он стоит в шапке
+    # страницы, и если шапка вдруг покажет не тот — это будет видно здесь же.
+    soonest = min(stays, key=lambda s: s["cancel"]["free_until"])
+    said.append(f'ближайший срок отмены: {soonest["cancel"]["free_until"][:10]} — '
+                f'{soonest["name"]}, {yen(soonest["total_jpy"])}')
 
     # 6. Место из вишлиста висит на брони. Опечатка в «stay» — это место,
     #    которое молча не покажется: страница соберётся, а его на ней не будет.
@@ -236,7 +241,31 @@ def check(trip: dict) -> list[str]:
     if trip.get("places"):
         said.append(f'мест из вишлиста: {len(trip["places"])}')
 
-    # 7. Никаких секретов в данных. Ключи с подчёркивания — записки самому
+    # 7. Переезд стоит на дне настоящего переезда и называет настоящие города.
+    #    Дата мимо — переезд, который тихо не покажется в нитке (та же беда,
+    #    что у правила №6). Города мимо — подпись, которая врёт рядом с верной
+    #    картинкой, а это хуже, чем её отсутствие.
+    hops = {}
+    chain = legs(stays)
+    for i, leg in enumerate(chain[1:], 1):
+        hops[leg["sleep_from"].isoformat()] = (chain[i - 1]["city"], leg["city"])
+    for t in trip.get("transfers", []):
+        pair = hops.get(t["date"])
+        if not pair:
+            raise Failed(f'переезд {t["date"]}: в этот день по броням никто никуда не едет')
+        if (t["from"], t["to"]) != pair:
+            raise Failed(f'переезд {t["date"]}: записано {t["from"]} → {t["to"]}, '
+                         f'а по броням {pair[0]} → {pair[1]}')
+        said.append(f'переезд {t["date"]}: {t["from"]} → {t["to"]}, '
+                    + (yen(t["jpy"]) if t.get("jpy") else "цены нет"))
+
+    # 8. В строке «чего нет в итоге» чисел быть не должно. Число здесь — второй
+    #    счёт рядом с первым, и разойтись они успеют молча.
+    for x in trip.get("not_in_total", []):
+        if re.search(r"\d", x):
+            raise Failed(f'«{x}» в списке «чего нет в итоге»: числам там не место')
+
+    # 9. Никаких секретов в данных. Ключи с подчёркивания — записки самому
     #    себе о том, чего сюда класть нельзя; они перечисляют запретные слова
     #    и поэтому в досмотр не идут, иначе инструкция запрещала бы сама себя.
     blob = json.dumps(
@@ -331,6 +360,66 @@ def span_dates(a: date, b: date) -> str:
 
 # ─────────────────────────────────────────── куски страницы
 
+def deadlines(stays: list) -> str:
+    """Сроки бесплатной отмены — наверху, а не по одному внутри карточек.
+
+    Это самые дорогие даты на странице: после них деньги не возвращают вовсе.
+    Лежали они по карточкам городов, и вечером 23 августа половина карточки
+    уехала под стрелку «подробности проживания» — сроки снаружи остались, но
+    ответ на вопрос «что горит ближайшим» по-прежнему приходилось собирать,
+    сравнивая четыре даты в четырёх разных местах.
+
+    Ближайший стоит в шапке, остальные — под стрелкой. Место выбрано не только
+    по важности: правый столбец шапки ниже заголовка, и строка встаёт в уже
+    существующую пустоту, не удлиняя страницу. Потолок в два экрана — её слово,
+    и новое важное не должно за него платить.
+
+    Дни считает браузер (`data-deadline`, см. JS), а не сборка: «осталось 116
+    дней» замерзает в момент сборки, а страница живёт неделями. В разметку
+    уезжает только дата — она не стареет. Без JS страница показывает дату и
+    молчит про остаток; молчание тут честно, а замороженное число — нет.
+
+    Порядок — по дате, и это проверяется в check(): ближайшим обязан быть
+    ближайший. Если он всё-таки успел пройти между сборкой и чтением, браузер
+    гасит его и раскрывает список сам, чтобы живые сроки не оказались спрятаны
+    за мёртвым.
+    """
+    order = sorted(stays, key=lambda s: s["cancel"]["free_until"])
+    if not order:
+        return ""
+
+    def who(s: dict) -> str:
+        return s.get("label") or f'{s["city"]} · {s["area"]}'
+
+    def when(s: dict) -> str:
+        iso = s["cancel"]["free_until"]
+        return f'{day_month(iso)} {d(iso).year}'
+
+    first, rest = order[0], order[1:]
+    tail = "".join(
+        f'<li data-deadline="{e(s["cancel"]["free_until"])}">'
+        f'<b class="till">{when(s)}</b>'
+        f'<span class="who">{e(who(s))}</span>'
+        f'<span class="cost">{money(s["total_jpy"])}</span></li>'
+        for s in rest
+    )
+    opens = (f'<span class="opens">ещё {len(rest)} '
+             f'{plural(len(rest), "срок", "срока", "сроков")}</span>' if rest else "")
+
+    return f"""
+<details class="deadlines">
+  <summary>
+    <span class="cap">вернут деньги, если отменить до</span>
+    <span class="one" data-deadline="{e(first["cancel"]["free_until"])}">
+      <b class="till">{when(first)}</b>
+      <span class="who">{e(who(first))}</span>
+      <span class="cost">{money(first["total_jpy"])}</span>
+    </span>{opens}
+  </summary>
+  <ol class="rest">{tail}</ol>
+</details>"""
+
+
 def masthead(trip: dict, stays: list, all_legs: list) -> str:
     t = trip["trip"]
     start, end = d(t["start"]), d(t["end"])
@@ -344,12 +433,15 @@ def masthead(trip: dict, stays: list, all_legs: list) -> str:
     <p class="eyebrow">поездка</p>
     <h1>{e(t["title"])} <span class="year">{e(t["year"])}</span></h1>
   </div>
-  <p class="when">
-    <b>{e(t["subtitle"])} {e(t["year"])}</b>
-    <span>{days} {plural(days, "день", "дня", "дней")}</span>
-    <span>{nights} оплаченных {plural(nights, "ночь", "ночи", "ночей")}</span>
-    <span>{moves} {plural(moves, "переезд", "переезда", "переездов")}</span>
-  </p>
+  <div class="side">
+    <p class="when">
+      <b>{e(t["subtitle"])} {e(t["year"])}</b>
+      <span>{days} {plural(days, "день", "дня", "дней")}</span>
+      <span>{nights} оплаченных {plural(nights, "ночь", "ночи", "ночей")}</span>
+      <span>{moves} {plural(moves, "переезд", "переезда", "переездов")}</span>
+    </p>
+    {deadlines(stays)}
+  </div>
 </header>"""
 
 
@@ -441,11 +533,52 @@ def thread(trip: dict, all_legs: list) -> str:
               f'прилёт в {leg["city"]}' if i == 0 else f'{all_legs[i - 1]["city"]} → {leg["city"]}')
              for i, leg in enumerate(all_legs)]
     marks.append((end, "домой"))
+
+    # Чем именно едет переезд — из `transfers`, по дате. Раньше поезда лежали
+    # только пунктами то-до: то-до говорит «купить билет», а нитка обязана
+    # говорить «чем и сколько ехать» — иначе между двумя городами на картинке
+    # пустота, а в ней два с половиной часа и четырнадцать тысяч иен.
+    #
+    # Цены нет — рисуется пустое поле с подписью, а не прочерк и не
+    # правдоподобное число: экспресс до Киносаки мы не подтверждали.
+    rides = {t["date"]: t for t in trip.get("transfers", [])}
     moves = []
     for i, (when, text) in enumerate(marks):
         room = ((marks[i + 1][0] - when).days if i + 1 < len(marks)
                 else total + 1 - (when - start).days)
-        moves.append(f'<div class="move" style="{col(when, max(room, 1))}"><i></i>{e(text)}</div>')
+        ride = rides.get(when.isoformat())
+        detail = ""
+        if ride:
+            # Цена и дыра в цене — рядом, а не вместо друг друга. 15 января мы
+            # знаем синкансэн и не знаем экспресс до Киото: одно число без
+            # пустого поля рядом прочиталось бы как цена всего переезда.
+            money_bits = ""
+            if ride.get("jpy"):
+                money_bits += f'<span class="cost">{yen(ride["jpy"])}</span>'
+                if ride.get("covers"):
+                    money_bits += f'<span class="covers">{e(ride["covers"])}</span>'
+            # Вилка вместо пустоты, если она у нас есть. 24 августа Ни
+            # спросила «а посмотреть не можете что ли?» про цену экспресса до
+            # Киносаки — посмотрел: источники расходятся (¥4 500–5 300 у
+            # путеводителей против «от ¥7 350» у сервиса JR), и выдать одно
+            # число за факт нельзя. Вилка честнее и пустоты, и выдумки, но
+            # подписана «оценка», чтобы не читалась как цена билета.
+            if ride.get("estimate_jpy") and not ride.get("jpy"):
+                low, high = ride["estimate_jpy"]
+                money_bits += (f'<span class="cost guess">≈{yen(low)}–{yen(high)}</span>')
+            elif not ride.get("jpy") or ride.get("nocost"):
+                money_bits += (f'<span class="cost none"><span class="slot"></span>'
+                               f'{e(ride.get("nocost", "цена"))}</span>')
+            elif ride.get("estimate_jpy"):
+                low, high = ride["estimate_jpy"]
+                money_bits += (f'<span class="cost guess">≈{yen(low)}–{yen(high)}</span>')
+            detail = (f'<span class="ride"><span class="how">{e(ride["how"])}</span>'
+                      f'<span class="hrs">{e(ride["hours"])}</span>{money_bits}</span>')
+        moves.append(
+            f'<div class="move{" has" if ride else ""}" style="{col(when, max(room, 1))}">'
+            f'<span class="hd"><i></i><span class="dt">{day_month(when.isoformat())}</span>'
+            f'{e(text)}</span>{detail}</div>'
+        )
 
     return f"""
 <section class="thread" aria-label="вся поездка одной линией">
@@ -756,6 +889,14 @@ def ledger(trip: dict, stays: list, all_legs: list) -> str:
     )
     caveats = "".join(f"<li>{e(x)}</li>" for x in trip["notes"])
 
+    # Итог неполный, и сказать об этом обязана строка, стоящая вплотную к нему.
+    # Крупное число само себя объявляет полной ценой поездки: подписи «жильё»
+    # над ним хватает, только пока её читают. Чисел здесь нет нарочно — это был
+    # бы второй счёт, который разойдётся с первым молча.
+    missing = trip.get("not_in_total", [])
+    notall = (f'<p class="notall">в это число не входит: '
+              + ", ".join(f"<span>{e(x)}</span>" for x in missing) + "</p>") if missing else ""
+
     return f"""
 <section class="ledger">
   <div class="total" id="check">
@@ -765,6 +906,7 @@ def ledger(trip: dict, stays: list, all_legs: list) -> str:
        <span class="jpy" data-jpy>{yen(total)}</span></p>
     <p class="fx">$1 = ¥{FX["usd_per_jpy"]} · курс на {fx_human_date()} · платится в иенах,
        доллары округлены</p>
+    {notall}
     <div class="bar" role="img" aria-label="как разделена оплата">
       <span class="seg paid" data-seg="paid" style="width:{part(paid)}"></span>
       <span class="seg due" data-seg="upcoming" style="width:{part(upcoming)}"></span>
@@ -896,9 +1038,13 @@ def luggage(trip: dict) -> str:
         for m in lug["moves"]
     )
     always = "".join(f"<li>{e(x)}</li>" for x in lug["always"])
+    # Пересылка чемодана стоит денег и в чек не идёт — цена стоит рядом с самой
+    # пересылкой, а не только в строке «чего в итоге нет».
+    cost = f'<p class="cost">{e(lug["cost"])}</p>' if lug.get("cost") else ""
     return f"""
 <div id="luggage">
   <p class="lead">{e(lug["lead"])}</p>
+  {cost}
   <ol class="moves">{moves}</ol>
   <ul class="always">{always}</ul>
 </div>"""
@@ -1060,10 +1206,54 @@ code{font-size:.88em; background:var(--sand); padding:1px 5px; border-radius:4px
 .eyebrow{margin:0; font-size:10.5px; letter-spacing:.24em; text-transform:uppercase; color:var(--quiet)}
 .masthead h1{font-size:44px; line-height:1; letter-spacing:-.01em; margin-top:4px}
 .masthead h1 .year{color:var(--gold); font-size:24px; letter-spacing:.06em}
+.masthead .side{display:flex; flex-direction:column; align-items:flex-end; gap:9px}
 .masthead .when{margin:0; font-size:13px; color:var(--quiet); letter-spacing:.04em;
   display:flex; flex-wrap:wrap; gap:4px 14px; align-items:baseline}
 .masthead .when b{color:var(--ink); font-size:15px; letter-spacing:.02em}
 .masthead .when span::before{content:"·"; margin-right:14px; opacity:.5}
+
+/* ── ближайший срок отмены: самая дорогая дата страницы, в шапке
+
+   Стоит в правом столбце под датами поездки — там, где до сих пор была пустота
+   ниже заголовка. Оттого блок и не удлиняет страницу: он занимает уже
+   потраченную высоту, а потолок в два экрана — её слово.
+
+   Остаток дней дописывает браузер в `.left` (см. JS). Без него видна только
+   дата: она не стареет, а замороженное «осталось 116 дней» стареет каждые
+   сутки. */
+.deadlines{margin:0}
+.deadlines > summary{cursor:pointer; list-style:none; display:flex; flex-wrap:wrap;
+  align-items:baseline; justify-content:flex-end; gap:1px 10px; padding:4px 0 0}
+.deadlines > summary::-webkit-details-marker{display:none}
+.deadlines .one{display:flex; flex-wrap:wrap; align-items:baseline; gap:2px 9px;
+  justify-content:flex-end}
+/* Ромб — тот же знак, которым помечена спокойная заметка ниже: на странице
+   он значит «это сказано нарочно, прочти». */
+.deadlines .cap{flex:1 0 100%; text-align:right; font-size:9.5px; letter-spacing:.15em;
+  text-transform:uppercase; color:var(--gold); font-weight:700}
+.deadlines .cap::before{content:"◆"; margin-right:7px; font-size:8px; vertical-align:1px}
+.deadlines .till{font-family:var(--serif); font-size:17px; font-weight:600;
+  line-height:1.15; color:var(--ink)}
+.deadlines .who{font-size:11.5px; color:var(--quiet)}
+.deadlines .cost .usd{font-family:var(--num); font-size:12px; font-weight:600; color:var(--deep)}
+.deadlines .cost .jpy{font-family:var(--num); font-size:10.5px; color:var(--quiet);
+  margin-left:5px}
+.deadlines .left{font-size:12px; font-weight:700; color:var(--bronze)}
+.deadlines .soon > .left,.deadlines .soon .left{color:var(--fire)}
+/* Срок, успевший пройти между сборкой и чтением: браузер гасит его и сам
+   раскрывает список, чтобы живые сроки не остались за мёртвым. */
+.deadlines .gone .till,.deadlines .gone .who,
+.deadlines .gone .cost .usd,.deadlines .gone .cost .jpy{
+  text-decoration:line-through; color:var(--quiet)}
+.deadlines .opens{font-size:11px; color:var(--deep); border-bottom:1px dotted var(--rule);
+  white-space:nowrap}
+.deadlines[open] .opens::after{content:" ▴"}
+.deadlines:not([open]) .opens::after{content:" ▾"}
+.deadlines .rest{list-style:none; margin:7px 0 0; padding:0; display:grid; gap:2px;
+  justify-items:end}
+.deadlines .rest li{display:flex; flex-wrap:wrap; align-items:baseline; gap:2px 9px;
+  justify-content:flex-end; font-size:11.5px; color:var(--quiet)}
+.deadlines .rest .till{font-family:var(--num); font-size:12px; color:var(--ink)}
 
 /* ── нитка */
 .thread{border-top:1px solid var(--rule); padding-top:16px; margin-bottom:18px}
@@ -1111,11 +1301,29 @@ code{font-size:.88em; background:var(--sand); padding:1px 5px; border-radius:4px
 .thread .day b{font-family:var(--num); font-size:13px; font-weight:600}
 .thread .day span{display:block; font-size:9.5px; color:var(--quiet); letter-spacing:.08em}
 .thread .day.we b{color:var(--deep)}
-.thread .moves{margin-top:9px}
-.thread .move{display:flex; align-items:center; gap:6px; font-size:10.5px; color:var(--deep);
-  white-space:nowrap; margin-left:-3px}
+.thread .moves{margin-top:9px; align-items:start}
+.thread .move{display:flex; flex-direction:column; gap:1px; font-size:10.5px;
+  color:var(--deep); margin-left:-3px; padding-right:9px}
+.thread .move .hd{display:flex; align-items:center; gap:6px; white-space:nowrap}
+/* Дата переезда нужна только там, где нет числовой оси, — на телефоне нитка
+   встаёт столбиком и ось прячется. */
+.thread .move .dt{display:none}
 .thread .move i{width:0; height:0; border-left:5px solid var(--gold);
   border-top:3.5px solid transparent; border-bottom:3.5px solid transparent; flex:none}
+/* Чем и сколько ехать. Строка узкая по столбцам сетки, поэтому переносится, а
+   не обрезается: половина названия поезда хуже двух строк. */
+.thread .move .ride{display:flex; flex-wrap:wrap; gap:0 8px; padding-left:11px;
+  font-size:10px; line-height:1.35; color:var(--quiet)}
+.thread .move .hrs{font-family:var(--num)}
+.thread .move .cost{font-family:var(--num); color:var(--bronze); font-weight:600}
+/* Цены нет — пустое поле с подписью, как в «ещё не посчитано» внизу. Прочерк
+   читается как «бесплатно», выдуманное число — как подтверждённое. */
+.thread .move .cost.none{color:var(--quiet); font-weight:400; font-family:var(--sans)}
+.thread .move .slot{display:inline-block; width:26px; border-bottom:1px solid var(--rule);
+  margin-right:5px; vertical-align:2px}
+/* Что покрывает записанное число — рядом с ним, а не отдельной строкой:
+   строка съедала бы высоту нитки втрое чаще, чем добавляла смысл. */
+.thread .move .covers{font-size:9.5px}
 
 /* ── заметка про ночь с двумя бронями */
 .alert{border:1.5px solid var(--fire); background:var(--sand); border-radius:12px;
@@ -1362,15 +1570,25 @@ code{font-size:.88em; background:var(--sand); padding:1px 5px; border-radius:4px
 .parts .part .num{font-family:var(--num); color:var(--ink); margin-left:5px}
 .parts .built .who{color:var(--deep)}
 .total .says{display:block; margin:7px 0 0; font-size:11px; color:var(--quiet); line-height:1.45}
+/* Чего в этом числе нет. Стоит между суммой и разбивкой оплаты — то есть в
+   одном взгляде с цифрой, а не четырьмя строками ниже: подписи «жильё» над
+   крупным числом хватает ровно до тех пор, пока её читают. Пунктир — тот же
+   язык, что у желаний и пустых полей: «здесь ещё не всё». */
+.notall{margin:8px 0 0; padding-top:7px; border-top:1px dashed var(--rule);
+  font-size:11px; color:var(--quiet); line-height:1.45}
+.notall span{color:var(--deep)}
 .more > summary .tag{font-size:10px; letter-spacing:.06em; text-transform:none;
   color:var(--gold); font-weight:600}
 
 /* ── свёрнутое: списки, дни, багаж */
 .more{border-bottom:1px solid var(--hair)}
 .more:first-of-type{border-top:1px solid var(--rule); margin-top:26px}
-.more > summary{cursor:pointer; list-style:none; padding:13px 2px; font-size:13px;
+/* 38px, а не 44: 44 — размер пальца, и он нужен на телефоне, где и стоит
+   (см. запрос по max-width:700px ниже). На компьютере это четыре свёртки
+   подряд, то есть 24 точки высоты, потраченные на промах мышью. */
+.more > summary{cursor:pointer; list-style:none; padding:10px 2px; font-size:13px;
   letter-spacing:.14em; text-transform:uppercase; color:var(--quiet); font-weight:700;
-  display:flex; align-items:center; gap:10px; min-height:44px}
+  display:flex; align-items:center; gap:10px; min-height:38px}
 .more > summary::-webkit-details-marker{display:none}
 .more > summary::before{content:"+"; font-size:15px; color:var(--gold); width:12px}
 .more[open] > summary::before{content:"–"}
@@ -1412,7 +1630,12 @@ input:checked ~ .txt{color:var(--deep); text-decoration:line-through}
 .days .empty{margin:2px 0 0; font-size:11.5px; color:var(--quiet); font-style:italic}
 .days .move .date b{color:var(--gold)}
 .days .clash .date b{color:var(--fire)}
-.moves{list-style:none; margin:0 0 14px; padding:0; display:grid; gap:10px}
+/* `#luggage` в начале не для красоты: без него правило доставало и ряд
+   переездов в нитке, у которого тот же класс. Высоты это не меняло (нижний
+   отступ там схлопывался с отступом самой нитки — проверено измерением, а не
+   рассуждением), но раскладку ряда правило задавало через раз, по случайному
+   порядку строк в файле. */
+#luggage .moves{list-style:none; margin:0 0 14px; padding:0; display:grid; gap:10px}
 #luggage .moves li{background:var(--card); border:1px solid var(--hair); border-radius:10px;
   padding:12px 14px}
 #luggage .when{margin:0; font-size:10px; letter-spacing:.12em; text-transform:uppercase;
@@ -1423,6 +1646,8 @@ input:checked ~ .txt{color:var(--deep); text-decoration:line-through}
 #luggage .how{margin:4px 0 0; font-size:12.5px; font-weight:600}
 #luggage .note{margin:1px 0 0; font-size:11.5px; color:var(--quiet)}
 #luggage .lead{margin:0 0 12px; font-size:14px}
+#luggage .cost{margin:-8px 0 12px; font-family:var(--num); font-size:12.5px;
+  color:var(--bronze); font-weight:600}
 .always{list-style:none; margin:0; padding:0; font-size:12.5px; color:var(--quiet)}
 .always li{padding:3px 0 3px 17px; position:relative}
 .always li::before{content:"✓"; position:absolute; left:0; color:var(--moss); font-size:11px}
@@ -1457,7 +1682,20 @@ input:checked ~ .txt{color:var(--deep); text-decoration:line-through}
   .thread .bar .n{order:-1; flex:none}
   .thread .home{flex-direction:row; align-items:baseline; gap:8px; height:auto;
     border-left:0; padding:6px 0 0}
-  .thread .dates,.thread .moves{display:none}
+  .thread .dates{display:none}
+  /* Числовой оси на телефоне нет, поэтому «прилёт» и «домой» без неё — просто
+     стрелки в никуда. А вот переезд с поездом и ценой нужен в дороге больше
+     всего: его оставляем, отдельным блоком, со своей датой. */
+  .thread .move:not(.has){display:none}
+  /* Столбец, а не сетка: базовое правило `.row` задаёт шестнадцать колонок по
+     ночам, и без сброса шаблона переезды встают тремя узкими башнями. */
+  .thread .moves{margin-top:11px; display:grid; grid-template-columns:1fr; gap:7px}
+  .thread .move{margin-left:0; padding:9px 12px; border:1px dashed var(--rule);
+    border-radius:8px; background:rgba(255,255,255,.34)}
+  .thread .move .hd{flex-wrap:wrap; white-space:normal; font-size:12.5px; font-weight:600}
+  .thread .move .dt{display:inline; font-family:var(--num); font-weight:400;
+    color:var(--quiet); font-size:11px}
+  .thread .move .ride{font-size:11px; padding-left:11px}
   .thread .paidrow{height:auto}
   .thread .paidbar{height:auto; background:none; border:0; margin-top:4px}
   .thread .paidbar span{position:static; white-space:normal; display:block}
@@ -1468,11 +1706,20 @@ input:checked ~ .txt{color:var(--deep); text-decoration:line-through}
   /* Пальцем попадать: карта, телефон, все свёртки и всё, чем она правит
      страницу, — не мельче 36px. Проверяется в test/wide.py по этому же
      списку: обещание, которое никто не меряет, живёт ровно до первой правки. */
+  /* Шапка на телефоне встаёт столбиком — вместе с ней и сроки: прижимать их
+     к правому краю в один столбец с заголовком значит рвать чтение надвое. */
+  .masthead .side{align-items:flex-start; width:100%}
+  .deadlines > summary{justify-content:flex-start; min-height:36px; align-items:center}
+  .deadlines .one{justify-content:flex-start}
+  .deadlines .cap{text-align:left}
+  .deadlines .rest{justify-items:start}
+  .deadlines .rest li{justify-content:flex-start}
   .btn,.wish-more summary{min-height:36px; display:flex; align-items:center}
   .knob,.tiny,.ed,.rm,.save,.drop{min-height:36px; display:inline-flex; align-items:center}
   .pane{grid-template-columns:1fr}
   .pane .f.wide{grid-column:span 1}
   .stayfine > summary{min-height:44px; align-content:center}
+  .more > summary{min-height:44px; padding:13px 2px}
   .rows dd{font-size:12.5px}
   .city .inner,.city .cap{padding-left:16px; padding-right:16px}
 }
@@ -1502,13 +1749,22 @@ JS = """
     if (b === 1) return one;
     return many;
   }
+  /* Номер суток по японскому календарю. Сроки объявлены в JST, и считать их
+     надо в нём же: в Европе ещё вечер 24-го, а в Японии уже 25-е. */
+  function jstDay(ms){ return Math.floor((ms + 9 * 36e5) / DAY); }
+
   function leftText(iso){
     /* Срок объявлен по японскому времени; сравниваем в UTC, добавив +09:00. */
     var when = new Date(iso + ":00+09:00");
     if (isNaN(when)) return null;
-    var days = Math.ceil((when - Date.now()) / DAY);
-    if (days < 0) return { text: "срок прошёл", soon: true };
-    if (days === 0) return { text: "сегодня последний день", soon: true };
+    /* Прошёл ли срок — по мгновению, точно. А вот «сколько осталось» — по
+       календарю, целыми сутками. Раньше здесь стоял `Math.ceil` от разницы
+       мгновений, и он давал лишний день: 24 августа до 18 декабря 116 дней,
+       а страница говорила 117. Ошибка была в её пользу — то есть в ту
+       сторону, в которую на денежном сроке ошибаться нельзя. */
+    if (when - Date.now() < 0) return { text: "срок прошёл", soon: true, gone: true };
+    var days = jstDay(when.getTime()) - jstDay(Date.now());
+    if (days <= 0) return { text: "сегодня последний день", soon: true };
     return {
       text: "осталось " + days + " " + plural(days, "день", "дня", "дней"),
       soon: days <= 30
@@ -1524,7 +1780,16 @@ JS = """
     tag.textContent = left.text;
     node.appendChild(tag);
     if (left.soon) node.classList.add("soon");
+    if (left.gone) node.classList.add("gone");
   });
+
+  /* Ближайший срок выбран при сборке, а страница живёт неделями: он может
+     пройти раньше, чем её пересоберут. Тогда живые сроки оказались бы спрятаны
+     под мёртвым — поэтому мёртвый зачёркивается (класс выше), а список
+     раскрывается сам. Ничего не переставляем: подмена самого важного числа на
+     глазах хуже, чем открытый список. */
+  var head = document.querySelector(".deadlines");
+  if (head && head.querySelector("summary .gone")) head.open = true;
 
   /* Галочки переехали отсюда в хранилище (см. ниже, «её страница»): список,
      который забывает отмеченное при смене телефона, — это список, которому
