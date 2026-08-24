@@ -539,26 +539,45 @@ def check_reference(ref: dict | None = None) -> list[str]:
 
 # ─────────────────────────────────────────── цвета и отрезки
 
-# Цвет — единственное, что здесь не из данных: индиго Гиндзы, слива Киото,
+# Цвет — единственное, что здесь не из данных: незабудка Гиндзы, слива Киото,
 # вода Киносаки, глициния Асакусы. Новый город получит цвет из запаса, а не
 # исчезнет с картинки.
 #
-# На каждом из них лежит белый текст — название города в шапке карточки и
-# «4 ночи» в нитке, — поэтому тон подобран не на глаз: белое на нём держит
-# 7:1.
+# У города здесь **пара**, а не цвет: тон — светлая плоскость, чернила — тот
+# же оттенок, доведённый до темноты. Так вышло из просьбы Ни 24 августа
+# сделать тона пастельными, «чтобы чуть мимимишнее». Одной заменой цвета это
+# не делается: на тонах лежал белый текст — название города в шапке карточки и
+# «4 ночи» в нитке, — а пастель белое не держит физически, светлое на светлом.
+# Значит меняется пара: плоскость посветлела, текст на ней стал тёмным.
+# Белого на тонах не осталось нигде.
 #
-# 24 августа тона перебраны вместе со всей гаммой. Это самые крупные цветные
-# пятна страницы — четыре отрезка нитки и четыре шапки карточек, — и оставить
-# их тёплыми значило бы перекрасить фон, а картинку нет: хурма и сосна на
-# холодной голубой бумаге читались бы как забытый кусок прежней страницы.
-# Различимость городов от этого не пострадала, у всех четырёх свой тон.
+# Число рядом — контраст чернил к своему тону, и он посчитан для новой пары, а
+# не унаследован от прежней. Порог здесь 7:1: самый строгий текст на тоне —
+# название города в карточке, 21px, то есть ещё не «крупный» по WCAG и живёт
+# под общим потолком, а не под поблажкой.
+#
+# Там, где цвет города рисует не плоскость, а линию — полоса «оплачено с…» и
+# полоска слева в разделе дней, — берутся **чернила**: пастельная линия на
+# светлой бумаге пропадает совсем (1.2:1 к бумаге против 10.5:1 у чернил).
+#
+# Четыре тона — четыре разных тона, а не четыре оттенка одного розового: их
+# цветовые углы разведены (214°, 325°, 164°, 256°), и по цвету опознаётся и
+# карточка, и отрезок нитки. Все они холоднее и бледнее, чем `--hot`: яркое на
+# странице носит смысл — горящий срок, неоплаченное, «бронировать», — и
+# города не должны к нему подбираться.
 TONES = {
-    ("Токио", "Гиндза"): "#2F4B7C",     # 8.7:1 — индиго, единственный уцелевший
-    ("Киото", "Сандзё"): "#8A2C55",     # 8.2:1 — слива вместо хурмы
-    ("Киносаки", "онсэн"): "#1F5D63",   # 7.5:1 — вода вместо сосны
-    ("Токио", "Асакуса"): "#5A3F86",    # 8.4:1 — глициния, холоднее прежней
+    ("Токио", "Гиндза"): ("#C1D5F0", "#1A355B"),    # 8.2:1 — незабудка
+    ("Киото", "Сандзё"): ("#F1C8E0", "#5D1D42"),    # 8.2:1 — цветущая слива
+    ("Киносаки", "онсэн"): ("#B7E4D8", "#0E3C35"),  # 8.8:1 — вода
+    ("Токио", "Асакуса"): ("#D8CEF3", "#3A296B"),   # 8.2:1 — глициния
 }
-SPARE = ["#2F4B7C", "#8A2C55", "#1F5D63", "#5A3F86", "#3A5470"]
+# Запас на пятый город — в той же пастели. Последняя пара нарочно почти без
+# цвета: ею красится отрезок «в воздухе», у которого города нет.
+SPARE = [
+    ("#C1D5F0", "#1A355B"), ("#F1C8E0", "#5D1D42"),
+    ("#B7E4D8", "#0E3C35"), ("#D8CEF3", "#3A296B"),
+    ("#CDD3E1", "#253553"),  # 8.2:1 — пасмурный, без города
+]
 
 
 def legs(stays: list) -> list:
@@ -597,7 +616,8 @@ def legs(stays: list) -> list:
 
     for i, leg in enumerate(out):
         first, last = leg["stays"][0], leg["stays"][-1]
-        leg["tone"] = TONES.get((leg["city"], leg["area"]), SPARE[i % len(SPARE)])
+        leg["tone"], leg["ink"] = TONES.get((leg["city"], leg["area"]),
+                                            SPARE[i % len(SPARE)])
         leg["nights"] = (leg["paid_to"] - leg["sleep_from"]).days
         leg["paid_nights"] = (leg["paid_to"] - leg["paid_from"]).days
         leg["hotel"] = first["name"]
@@ -777,7 +797,8 @@ def thread(trip: dict, all_legs: list) -> str:
         # в карточке города, а не в нитке.
         checkout = (f'<span class="edge o">{e(leg["checkout"])}</span>' if n >= 3 else "")
         bars.append(
-            f'<div class="bar" style="{col(leg["sleep_from"], n)};background:{leg["tone"]}">'
+            f'<div class="bar" style="{col(leg["sleep_from"], n)};'
+            f'background:{leg["tone"]};color:{leg["ink"]}">'
             f'<span class="edge i">{e(leg["checkin"].replace(" — ", "–"))}</span>{checkout}'
             f'<span class="who">{e(leg["city"])} · {e(leg["area"])}</span>'
             f'<span class="n">{n} {plural(n, "ночь", "ночи", "ночей")}</span></div>'
@@ -800,13 +821,16 @@ def thread(trip: dict, all_legs: list) -> str:
         if leg["paid_from"] >= leg["sleep_from"]:
             continue
         why = leg["stays"][-1].get("arriving", {}).get("why", "")
-        # Цвет тона идёт в `color`, а не в `background`: полоса рисуется косой
+        # Цвет города идёт в `color`, а не в `background`: полоса рисуется косой
         # штриховкой по currentColor и обведена рамкой. Так «оплачено, но не
         # прожито» отличается от прожитого фактурой, а не оттенком — на плохом
         # экране оттенок первым и пропадает.
+        #
+        # Здесь берутся чернила, а не тон: тон стал пастельным, а пастельная
+        # штриховка на светлой бумаге — 1.2:1, то есть полосы не видно вовсе.
         paid.append(
             f'<div class="paidbar" style="{col(leg["paid_from"], leg["paid_nights"])};'
-            f'color:{leg["tone"]}"><span>оплачено с {day_month(leg["paid_from"].isoformat())}'
+            f'color:{leg["ink"]}"><span>оплачено с {day_month(leg["paid_from"].isoformat())}'
             f'{f" · {e(why)}" if why else ""}</span></div>'
         )
 
@@ -1176,7 +1200,7 @@ def city_cards(all_legs: list, alerts: list, places: list, cancelled: list) -> s
 
         cards.append(f"""
 <article class="city">
-  <div class="cap" style="background:{leg["tone"]}">
+  <div class="cap" style="background:{leg["tone"]};color:{leg["ink"]}">
     <p class="name">{e(leg["city"])}</p>
     <p class="area">{e(leg["area"])}</p>
   </div>
@@ -1479,12 +1503,12 @@ def runs_of(plan: list, all_legs: list) -> list:
             f'{[r["city"] for r in named]} против {[leg["city"] for leg in all_legs]}'
         )
     for run, leg in zip(named, all_legs):
-        run["area"], run["tone"] = leg["area"], leg["tone"]
+        run["area"], run["ink"] = leg["area"], leg["ink"]
     for run in runs:
         if not run["city"]:
             # Отрезок без города бывает только первым (вылет): всё остальное
             # прилипло выше. Название берём у единственного дня.
-            run["area"], run["tone"] = "", SPARE[-1]
+            run["area"], run["ink"] = "", SPARE[-1][1]
     return runs
 
 
@@ -1667,7 +1691,7 @@ def by_day(trip: dict, stays: list, alerts: list, plan: list, all_legs: list) ->
         first, last = d(run["days"][0]["date"]), d(run["days"][-1]["date"])
         label = f'{run["city"]} · {run["area"]}' if run["city"] else run["days"][0]["title"]
         blocks.append(f"""
-<details class="run" open data-run="{e(label)}" style="--tone:{run["tone"]}">
+<details class="run" open data-run="{e(label)}" style="--city-line:{run["ink"]}">
   <summary>
     <span class="ct">{e(label)}</span>
     <span class="sp">{span_dates(first, last)}</span>
@@ -2178,12 +2202,18 @@ code{font-size:.88em; background:var(--mist); padding:1px 5px; border-radius:4px
    галочка чеклиста ниже, и одноимённый класс превращал ножку в плашку. */
 .thread .cap .stem{height:9px; border-left:1px solid var(--rule); margin-top:7px}
 .thread .bars{align-items:stretch; margin-top:2px}
+/* Цвет текста приходит из разметки вместе с заливкой — это чернила города, а
+   не общий `--ink`: у каждого тона свои, и держат они 8:1 именно к своему
+   тону. Раньше здесь стояло `color:#fff`, и пастель его убила бы. */
 .thread .bar{height:62px; border-radius:4px; position:relative; display:flex;
-  align-items:flex-end; padding:0 12px 9px; color:#fff; overflow:hidden}
+  align-items:flex-end; padding:0 12px 9px; overflow:hidden}
 .thread .bar .n{font-size:12.5px; font-weight:600; letter-spacing:.01em}
 .thread .bar .who{display:none}
+/* Часы заезда и выезда были белыми на 90% — приглушением через прозрачность.
+   На тёмных чернилах так делать нечем: прозрачность съедает контраст молча.
+   Второстепенность сказана кеглем и весом, цвет тот же. */
 .thread .bar .edge{position:absolute; top:9px; font-family:var(--num); font-size:10.5px;
-  color:rgba(255,255,255,.9); white-space:nowrap}
+  color:inherit; white-space:nowrap}
 .thread .bar .edge.i{left:12px}
 .thread .bar .edge.o{right:12px}
 .thread .bar.air{background:transparent; border:1px dashed var(--rule); color:var(--quiet);
@@ -2339,7 +2369,8 @@ code{font-size:.88em; background:var(--mist); padding:1px 5px; border-radius:4px
    сама, а обводка вокруг каждой из четырёх — половина того, из-за чего
    страница читалась таблицей. Радиус вырос с 6 до 10 по той же причине. */
 .city{background:var(--card); border-radius:10px; overflow:hidden}
-.city .cap{padding:12px 15px 11px; color:#fff}
+/* Цвет надписи — из разметки, чернилами города: см. `.thread .bar`. */
+.city .cap{padding:12px 15px 11px}
 .city .name{font-size:21px; line-height:1}
 .city .area{margin:5px 0 0; font-size:9.5px; letter-spacing:.18em; text-transform:uppercase;
   opacity:.85}
@@ -2648,9 +2679,11 @@ input:checked ~ .txt{color:var(--deep); text-decoration:line-through}
   align-items:baseline; gap:4px 10px; padding:9px 0 8px; min-height:34px}
 .run > summary::-webkit-details-marker{display:none}
 /* Цвет города — тот же, что в нитке и в карточке: полоска слева, а не заливка
-   под текстом, иначе контраст пришлось бы мерить у каждого тона отдельно. */
+   под текстом, иначе контраст пришлось бы мерить у каждого тона отдельно.
+   Полоска рисуется чернилами, а не тоном: три пикселя пастели на белой
+   карточке — 1.3:1, то есть полоски просто нет. */
 .run > summary .ct{font-size:13px; font-weight:700; color:var(--calm-ink);
-  border-left:3px solid var(--tone); padding-left:8px}
+  border-left:3px solid var(--city-line); padding-left:8px}
 .run > summary .sp{font-size:11.5px; color:var(--quiet)}
 .run > summary .n{font-size:10px; letter-spacing:.08em; color:var(--quiet); margin-left:auto}
 .rdays{padding:0 0 10px 11px}
@@ -2975,7 +3008,7 @@ a.mk.bk{border-color:var(--hot)}
   .thread .bar{height:auto; padding:10px 13px; margin-bottom:5px; align-items:baseline;
     flex-wrap:wrap; gap:2px 10px}
   .thread .bar .who{display:block; order:-2; flex:1 1 100%; font-size:13.5px; font-weight:600}
-  .thread .bar .edge{position:static; color:rgba(255,255,255,.9); font-size:11px}
+  .thread .bar .edge{position:static; color:inherit; font-size:11px}
   .thread .bar .edge.o{display:none}
   .thread .bar .n{order:-1; flex:none}
   .thread .home{flex-direction:row; align-items:baseline; gap:8px; height:auto;

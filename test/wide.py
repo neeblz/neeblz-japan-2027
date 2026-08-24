@@ -142,7 +142,7 @@
 import json
 import re
 import sys
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 from playwright.sync_api import sync_playwright
@@ -221,6 +221,59 @@ CONTRAST = """
 """
 
 
+# Цвет города рисует не только плоскости, но и линии: штриховку полосы
+# «оплачено с…» и полоску слева у города в разделе дней. Текста на них нет,
+# поэтому проверка выше их не видит вовсе — а пропасть они могут точно так же.
+# После перехода на пастель это перестало быть теорией: тон, годный под
+# заливку, на бумаге даёт 1.2:1, то есть линию, которой нет.
+#
+# Порог 3:1 — тот же, что WCAG требует от нетекстовых частей интерфейса.
+LINES = """
+() => {
+  const lin = c => (c /= 255) <= 0.04045 ? c / 12.92 : Math.pow((c + .055) / 1.055, 2.4);
+  const lum = c => .2126 * lin(c[0]) + .7152 * lin(c[1]) + .0722 * lin(c[2]);
+  const ratio = (a, b) => { const [x, y] = [lum(a), lum(b)].sort((p, q) => q - p);
+                            return (x + .05) / (y + .05); };
+  const rgba = s => { const m = (s || '').match(/[\\d.]+/g);
+                      return m ? [+m[0], +m[1], +m[2], m.length > 3 ? +m[3] : 1] : null; };
+  const over = (f, b) => [0, 1, 2].map(i => f[i] * f[3] + b[i] * (1 - f[3]));
+  function under(el) {
+    const stack = [];
+    for (let n = el; n; n = n.parentElement) {
+      const c = rgba(getComputedStyle(n).backgroundColor);
+      if (c && c[3] > 0) { stack.push(c); if (c[3] === 1) break; }
+    }
+    let bg = [255, 255, 255];
+    for (let i = stack.length - 1; i >= 0; i--) bg = over(stack[i], bg);
+    return bg;
+  }
+  const seen = [];
+  const say = (what, paint, el) => {
+    const c = rgba(paint); if (!c) return;
+    const bg = under(el);
+    seen.push({ what, got: Math.round(ratio(over(c, bg), bg) * 100) / 100 });
+  };
+  for (const el of document.querySelectorAll('.thread .paidbar'))
+    say('полоса «оплачено с…»', getComputedStyle(el).color, el);
+  for (const el of document.querySelectorAll('#days .run > summary .ct'))
+    say('полоска города «' + el.textContent.trim() + '»',
+        getComputedStyle(el).borderLeftColor, el);
+  return seen;
+}
+"""
+
+
+def lines(page, where: str, floor: float = 3.0):
+    """Линии, нарисованные цветом города, обязаны быть видны на своём фоне."""
+    seen = page.evaluate(LINES)
+    weak = [x for x in seen if x["got"] + 0.005 < floor]
+    want(seen and not weak,
+         f"цветные линии городов видны на своём фоне — {where} "
+         f"(проверено: {len(seen)}, слабых: {len(weak)})"
+         + ("" if not weak else " — " + "; ".join(
+             f'{x["what"]} {x["got"]} < {floor}' for x in weak[:4])))
+
+
 def contrast(page, where: str):
     """Померить контраст и сказать, где именно он просел."""
     bad = page.evaluate(CONTRAST, {"main": MAIN, "small": SMALL})
@@ -280,9 +333,20 @@ with sync_playwright() as pw:
     days = re.search(r"осталось (\d+)", lead)
     want(days is not None, f"обратный счёт дописан браузером: «{lead}»")
     if days:
-        real = (date(2026, 12, 18) - date.today()).days
+        # Считаем по ЯПОНСКОМУ сегодня, а не по нашему. Срок отмены — японский,
+        # страница про это прямо и пишет: «все сроки отмены по JST, UTC+9».
+        # Пока в Тбилиси 24-е, в Токио уже 25-е, и разница в сутки — не ошибка
+        # счёта, а разные календари.
+        #
+        # 24 августа проверка краснела каждый вечер после 17:00 CEST и была
+        # неправа: 115 на странице против 116 «по календарю». Взять сторону
+        # проверки значило бы сдвинуть отсчёт её денег в сторону, где времени
+        # будто бы больше, — а отменять она будет по японским часам.
+        jst_today = (datetime.now(timezone.utc) + timedelta(hours=9)).date()
+        real = (date(2026, 12, 18) - jst_today).days
         want(int(days.group(1)) == real,
-             f"дни считаются от сегодня: на странице {days.group(1)}, по календарю {real}")
+             f"дни считаются от японского сегодня ({jst_today}): "
+             f"на странице {days.group(1)}, по календарю {real}")
     want(not page.locator(".deadlines .rest").is_visible(),
          "остальные сроки лежат под стрелкой, пока её не открыли")
     head.click()
@@ -764,6 +828,7 @@ with sync_playwright() as pw:
     page.evaluate("() => document.querySelectorAll('details').forEach(d => d.open = true)")
     page.wait_for_timeout(150)
     contrast(page, "1440, всё развёрнуто")
+    lines(page, "1440, всё развёрнуто")
     page.evaluate("() => document.querySelectorAll('details').forEach(d => d.open = false)")
 
     SHOTS.mkdir(exist_ok=True)
