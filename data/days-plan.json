@@ -1,0 +1,237 @@
+{
+  "_": "План по дням — её текст от 24 августа 2026, разобранный в данные. Это ЗАСЕВ: первое наполнение хранилища. Дальше правит она сама на странице, и правки живут в KV, а не здесь. Перезасев не должен затирать её перестановки — сверять по id.",
+  "source": "Ни, Discord 1541122986482868267, 24 августа 2026",
+  "_id": "id пунктов вечные: по ним KV помнит, что она передвинула. Не перенумеровывать при правках текста.",
+  "_map": "map — как искать место на карте. Пусто у бытовых пунктов (обед, выезд): у них нет адреса.",
+  "_book": "book — то, что она сама выписала в «что обязательно бронировать». Поезда и чемодан там уже есть в переездах и багаже — в дне только пометка, второй раз цену не писать.",
+
+  "days": [
+    {
+      "date": "2027-01-04",
+      "title": "Вылет",
+      "city": null,
+      "items": [
+        {"id": "d04-1", "time": "Вечер", "title": "Аэропорт, перелёт"},
+        {"id": "d04-2", "time": "Ночь", "title": "В самолёте"}
+      ]
+    },
+    {
+      "date": "2027-01-05",
+      "title": "Прилёт и мягкая Гиндза",
+      "city": "Токио",
+      "items": [
+        {"id": "d05-1", "time": "до 15:00", "title": "Дорога из аэропорта, оставить вещи в lyf"},
+        {"id": "d05-2", "time": "15:00–17:00", "title": "Заселение, душ, отдых"},
+        {"id": "d05-3", "time": "17:00–19:00", "title": "Гиндза → Tokyo Station → Marunouchi", "map": "Marunouchi Tokyo"},
+        {"id": "d05-4", "time": "после 19:00", "title": "Простой ужин и спать"}
+      ]
+    },
+    {
+      "date": "2027-01-06",
+      "title": "Харадзюку и Сибуя",
+      "city": "Токио",
+      "items": [
+        {"id": "d06-1", "time": "09:00–10:30", "title": "Meiji Jingu", "map": "Meiji Jingu Shrine Tokyo"},
+        {"id": "d06-2", "time": "10:30–12:30", "title": "Harajuku и Takeshita Street", "map": "Takeshita Street Harajuku"},
+        {"id": "d06-3", "time": "12:30–13:30", "title": "Обед"},
+        {"id": "d06-4", "time": "13:30–15:30", "title": "Omotesando и AGE.3", "map": "Omotesando Tokyo"},
+        {"id": "d06-5", "time": "15:30–16:30", "title": "Прогулка по Сибуе", "map": "Shibuya Crossing Tokyo"},
+        {"id": "d06-6", "time": "около 16:30", "title": "Shibuya Sky", "note": "слот под январский закат", "map": "Shibuya Sky", "book": true},
+        {"id": "d06-7", "time": "после 18:00", "title": "Ужин в Сибуе"}
+      ]
+    },
+    {
+      "date": "2027-01-07",
+      "title": "Toyosu, teamLab и Odaiba",
+      "city": "Токио",
+      "items": [
+        {"id": "d07-1", "time": "07:30–09:00", "title": "Завтрак на Toyosu Market", "map": "Toyosu Market Tokyo"},
+        {"id": "d07-2", "time": "09:30–11:30", "title": "teamLab Planets", "map": "teamLab Planets TOKYO", "book": true},
+        {"id": "d07-3", "time": "12:00–13:30", "title": "Обед и Senkyaku Banrai", "map": "Toyosu Senkyaku Banrai"},
+        {"id": "d07-4", "time": "14:00–17:00", "title": "Odaiba, набережная, Gundam, виды на залив", "map": "Odaiba Tokyo"},
+        {"id": "d07-5", "time": "Вечер", "title": "Спокойно вернуться в Гинзу", "note": "Tokyo Tower сюда не пихаем"}
+      ]
+    },
+    {
+      "date": "2027-01-08",
+      "title": "Цукидзи, сады и красивая еда",
+      "city": "Токио",
+      "day_note": "Перед выходом отдать большой чемодан на доставку в Киото; одну ночь прожить с маленькой сумкой.",
+      "items": [
+        {"id": "d08-1", "time": "08:00–09:30", "title": "Tsukiji Outer Market", "map": "Tsukiji Outer Market"},
+        {"id": "d08-2", "time": "10:00–11:30", "title": "Hamarikyu Gardens", "map": "Hamarikyu Gardens Tokyo"},
+        {"id": "d08-3", "time": "12:00–14:00", "title": "Гиндза, обед и магазины", "map": "Ginza Tokyo"},
+        {"id": "d08-4", "time": "14:00–15:30", "title": "HIIRAGI Ginza", "map": "HIIRAGI Ginza", "book": true},
+        {"id": "d08-5", "time": "16:00–17:30", "title": "Marunouchi и Tokyo Station", "map": "Tokyo Station"},
+        {"id": "d08-6", "time": "18:00–20:30", "title": "est · Four Seasons Otemachi", "map": "est Four Seasons Hotel Tokyo Otemachi", "book": true}
+      ]
+    },
+    {
+      "date": "2027-01-09",
+      "title": "Переезд в Киото",
+      "city": "Киото",
+      "items": [
+        {"id": "d09-1", "time": "09:30", "title": "Выезд из отеля"},
+        {"id": "d09-2", "time": "около 10:30", "title": "Nozomi из Tokyo Station", "transfer": "tokyo-kyoto", "book": true},
+        {"id": "d09-3", "time": "около 13:00", "title": "Прибытие в Киото"},
+        {"id": "d09-4", "time": "14:00", "title": "Оставить вещи в OMO5 Sanjo"},
+        {"id": "d09-5", "time": "15:00–16:30", "title": "Nishiki Market", "map": "Nishiki Market Kyoto"},
+        {"id": "d09-6", "time": "17:00–19:00", "title": "Pontocho и набережная Камогавы", "map": "Pontocho Kyoto"},
+        {"id": "d09-7", "time": "после 19:00", "title": "Ужин и короткий вечерний Гион", "map": "Gion Kyoto"}
+      ]
+    },
+    {
+      "date": "2027-01-10",
+      "title": "Арасияма, KUMONOCHA и золотой храм",
+      "city": "Киото",
+      "items": [
+        {"id": "d10-1", "time": "07:00", "title": "Выезд из отеля"},
+        {"id": "d10-2", "time": "08:00–08:40", "title": "Bamboo Grove", "map": "Arashiyama Bamboo Grove"},
+        {"id": "d10-3", "time": "08:45–10:00", "title": "Tenryu-ji", "map": "Tenryu-ji Kyoto"},
+        {"id": "d10-4", "time": "10:00–11:00", "title": "Okochi Sanso", "map": "Okochi Sanso Garden"},
+        {"id": "d10-5", "time": "11:00–12:00", "title": "KUMONOCHA и ранний обед", "map": "KUMONOCHA Arashiyama"},
+        {"id": "d10-6", "time": "13:30–14:30", "title": "Kinkaku-ji", "map": "Kinkaku-ji Kyoto"},
+        {"id": "d10-7", "time": "15:00–16:00", "title": "Ryoan-ji", "note": "если остаются силы", "map": "Ryoan-ji Kyoto"},
+        {"id": "d10-8", "time": "после 17:00", "title": "Сандзё и свободный вечер"}
+      ]
+    },
+    {
+      "date": "2027-01-11",
+      "title": "Фусими-Инари и Нара",
+      "city": "Киото",
+      "day_note": "Это национальный праздник, поэтому стартуем неприлично рано.",
+      "items": [
+        {"id": "d11-1", "time": "06:30", "title": "Выезд"},
+        {"id": "d11-2", "time": "07:00–09:00", "title": "Fushimi Inari без основной толпы", "map": "Fushimi Inari Taisha"},
+        {"id": "d11-3", "time": "09:15–10:30", "title": "Поезд в Нару"},
+        {"id": "d11-4", "time": "10:30–11:30", "title": "Kofuku-ji и парк", "map": "Kofuku-ji Nara"},
+        {"id": "d11-5", "time": "11:30–13:00", "title": "Todai-ji", "map": "Todai-ji Nara"},
+        {"id": "d11-6", "time": "13:00–14:00", "title": "Обед"},
+        {"id": "d11-7", "time": "14:00–15:30", "title": "Kasuga Taisha", "map": "Kasuga Taisha Nara"},
+        {"id": "d11-8", "time": "15:30–16:30", "title": "Naramachi", "map": "Naramachi Nara"},
+        {"id": "d11-9", "time": "около 18:00", "title": "Возвращение в Киото"}
+      ]
+    },
+    {
+      "date": "2027-01-12",
+      "title": "Старый Киото",
+      "city": "Киото",
+      "day_note": "Перед сном собрать маленькую сумку на две ночи.",
+      "items": [
+        {"id": "d12-1", "time": "07:30", "title": "Выезд"},
+        {"id": "d12-2", "time": "08:00–09:30", "title": "Kiyomizu-dera", "map": "Kiyomizu-dera Kyoto"},
+        {"id": "d12-3", "time": "09:30–11:00", "title": "Sannenzaka и Ninenzaka", "map": "Sannenzaka Kyoto"},
+        {"id": "d12-4", "time": "11:00–12:00", "title": "Кафе или второй шанс на KUMONOCHA", "map": "KUMONOCHA Sannenzaka"},
+        {"id": "d12-5", "time": "12:00–13:00", "title": "Kodai-ji", "map": "Kodai-ji Kyoto"},
+        {"id": "d12-6", "time": "13:00–14:00", "title": "Обед"},
+        {"id": "d12-7", "time": "14:00–16:00", "title": "Yasaka Shrine, Maruyama Park, Chion-in", "map": "Yasaka Shrine Kyoto"},
+        {"id": "d12-8", "time": "16:00–18:00", "title": "Гион в сумерках", "map": "Gion Kyoto"},
+        {"id": "d12-9", "time": "Вечер", "title": "Финальный ужин в Киото"}
+      ]
+    },
+    {
+      "date": "2027-01-13",
+      "title": "Киото → Киносаки",
+      "city": "Киносаки",
+      "day_note": "Большой чемодан утром отправить прямо в OMO3 Asakusa.",
+      "items": [
+        {"id": "d13-1", "time": "около 09:30", "title": "Limited Express из Киото", "transfer": "kyoto-kinosaki", "book": true},
+        {"id": "d13-2", "time": "около 12:00", "title": "Kinosaki Onsen, оставить вещи в Morizuya", "map": "Kinosaki Onsen"},
+        {"id": "d13-3", "time": "12:00–14:00", "title": "Обед и первая прогулка"},
+        {"id": "d13-4", "time": "15:00", "title": "Заселение"},
+        {"id": "d13-5", "time": "15:30–17:30", "title": "Первый онсэн"},
+        {"id": "d13-6", "time": "Вечер", "title": "Ужин в рёкане и прогулка в юкате"}
+      ]
+    },
+    {
+      "date": "2027-01-14",
+      "title": "Киносаки без спешки",
+      "city": "Киносаки",
+      "day_note": "Это специально медленный день. Киносаки не заслужил превращения в чек-лист.",
+      "items": [
+        {"id": "d14-1", "time": "Утро", "title": "Завтрак в рёкане"},
+        {"id": "d14-2", "time": "09:30–12:00", "title": "Канатная дорога, Onsenji и видовая площадка", "map": "Kinosaki Onsen Ropeway"},
+        {"id": "d14-3", "time": "12:00–14:00", "title": "Обед и кафе"},
+        {"id": "d14-4", "time": "14:00–17:30", "title": "Онсэн-хоппинг и отдых"},
+        {"id": "d14-5", "time": "Вечер", "title": "Ужин, ещё один любимый онсэн, сон"}
+      ]
+    },
+    {
+      "date": "2027-01-15",
+      "title": "Киносаки → Токио",
+      "city": "Токио",
+      "items": [
+        {"id": "d15-1", "time": "до 10:00", "title": "Завтрак и выезд"},
+        {"id": "d15-2", "time": "около 10:30", "title": "Limited Express до Киото", "transfer": "kinosaki-kyoto", "book": true},
+        {"id": "d15-3", "time": "около 13:30", "title": "Nozomi до Токио", "transfer": "kyoto-tokyo", "book": true},
+        {"id": "d15-4", "time": "около 16:30–17:00", "title": "OMO3 Asakusa"},
+        {"id": "d15-5", "time": "18:00–20:00", "title": "Ночной Sensō-ji и ужин рядом", "map": "Senso-ji Asakusa"}
+      ]
+    },
+    {
+      "date": "2027-01-16",
+      "title": "Асакуса, Уэно и Янака",
+      "city": "Токио",
+      "items": [
+        {"id": "d16-1", "time": "07:30–09:00", "title": "Sensō-ji при мягком утреннем свете", "map": "Senso-ji Asakusa"},
+        {"id": "d16-2", "time": "09:00–10:00", "title": "Завтрак"},
+        {"id": "d16-3", "time": "10:00–11:30", "title": "Kappabashi", "map": "Kappabashi Kitchen Town Tokyo"},
+        {"id": "d16-4", "time": "12:00–13:00", "title": "Обед в Уэно"},
+        {"id": "d16-5", "time": "13:00–15:30", "title": "Tokyo National Museum", "map": "Tokyo National Museum"},
+        {"id": "d16-6", "time": "16:00–17:30", "title": "Yanaka Ginza", "map": "Yanaka Ginza Tokyo"},
+        {"id": "d16-7", "time": "Вечер", "title": "Ameyoko или отдых в Асакусе", "map": "Ameyoko Ueno"}
+      ]
+    },
+    {
+      "date": "2027-01-17",
+      "title": "Камакура",
+      "city": "Токио",
+      "items": [
+        {"id": "d17-1", "time": "07:30", "title": "Выезд из Асакусы"},
+        {"id": "d17-2", "time": "около 09:00", "title": "Прибытие в Камакуру", "map": "Kamakura Station"},
+        {"id": "d17-3", "time": "09:30–10:45", "title": "Hasedera", "map": "Hasedera Kamakura"},
+        {"id": "d17-4", "time": "11:00–12:00", "title": "Большой Будда", "map": "Kotoku-in Great Buddha Kamakura"},
+        {"id": "d17-5", "time": "12:00–13:00", "title": "Обед"},
+        {"id": "d17-6", "time": "13:30–14:30", "title": "Tsurugaoka Hachimangu", "map": "Tsurugaoka Hachimangu Kamakura"},
+        {"id": "d17-7", "time": "15:00–16:00", "title": "Hokokuji, если погода хорошая", "note": "туда лучше взять такси", "map": "Hokokuji Kamakura"},
+        {"id": "d17-8", "time": "16:00–17:30", "title": "Komachi-dori", "map": "Komachi-dori Kamakura"},
+        {"id": "d17-9", "time": "около 19:00", "title": "Обратно в Асакусу"}
+      ]
+    },
+    {
+      "date": "2027-01-18",
+      "title": "Borderless, Tokyo Tower и Синдзюку",
+      "city": "Токио",
+      "items": [
+        {"id": "d18-1", "time": "09:00–11:00", "title": "teamLab Borderless", "map": "teamLab Borderless Azabudai", "book": true},
+        {"id": "d18-2", "time": "11:00–12:30", "title": "Azabudai Hills и обед", "map": "Azabudai Hills Tokyo"},
+        {"id": "d18-3", "time": "13:00–14:30", "title": "Tokyo Tower", "map": "Tokyo Tower"},
+        {"id": "d18-4", "time": "15:30–17:00", "title": "Shinjuku и бесплатная смотровая Tokyo Metropolitan Government", "map": "Tokyo Metropolitan Government Building Observation Deck"},
+        {"id": "d18-5", "time": "после 17:00", "title": "Последний шопинг и ужин"},
+        {"id": "d18-6", "time": "Вечером", "title": "Спокойно собрать чемодан"}
+      ]
+    },
+    {
+      "date": "2027-01-19",
+      "title": "Домой",
+      "city": null,
+      "items": [
+        {"id": "d19-1", "time": "Утро", "title": "Завтрак рядом с отелем"},
+        {"id": "d19-2", "time": "до 11:00", "title": "Выезд"},
+        {"id": "d19-3", "time": "Дальше", "title": "Только аэропорт", "note": "точное время добавим, когда будет рейс"}
+      ]
+    }
+  ],
+
+  "_book_list": "Её собственный список «что обязательно бронировать» — сверка, что ни один book не потерялся при разборе. Поезда и доставка чемодана уже живут в переездах и багаже; здесь они только для проверки полноты.",
+  "book_list": [
+    {"what": "Shibuya Sky", "when": "6 января, слот примерно 16:00–16:30", "item": "d06-6"},
+    {"what": "teamLab Planets", "when": "7 января утром", "item": "d07-2"},
+    {"what": "HIIRAGI Ginza", "when": "8 января", "item": "d08-4"},
+    {"what": "est", "when": "8 января вечером", "item": "d08-6"},
+    {"what": "teamLab Borderless", "when": "18 января утром", "item": "d18-1"},
+    {"what": "Nozomi", "when": "9 и 15 января", "item": "d09-2", "also": "d15-3", "lives_in": "transfers"},
+    {"what": "Limited Express", "when": "13 и 15 января", "item": "d13-1", "also": "d15-2", "lives_in": "transfers"},
+    {"what": "Доставку чемодана подтвердить в lyf и OMO5", "when": "8 и 13 января", "lives_in": "luggage"}
+  ]
+}
