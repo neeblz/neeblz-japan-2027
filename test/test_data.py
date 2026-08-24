@@ -363,6 +363,35 @@ class PageShowsIt(unittest.TestCase):
             self.assertIn(place["title"], self.html,
                           f'{place["title"]}: место пропало со страницы целиком')
 
+    def test_nothing_after_the_price_stays_outside_the_card(self):
+        """Её слово 2026-08-24: «все что после ценника в долларах убрать под кат».
+
+        Снаружи карточка держит пять строк — город, район, отель, даты с ночами
+        и цену. Сроки отмены, способ оплаты, часы заезда, адрес и телефон живут
+        под стрелкой. Меряется это по разметке карточки, а не по глазам: вещь,
+        уехавшая под кат, и вещь, пропавшая со страницы, снаружи выглядят
+        одинаково — поэтому здесь же сверяется, что внутри стрелки всё это есть.
+        """
+        cards = re.search(r'<section class="cities">(.*?)</section>', self.html, re.S).group(1)
+        outside = re.sub(r"<details class=\"stayfine\">.*?</details>", "", cards, flags=re.S)
+        for hidden in ("бесплатная отмена", "JST", "data-deadline", "списано",
+                       "оплата на месте", "maps/search", "tel:", "class=\"stay",
+                       REAL["stays"][0]["phone"], REAL["stays"][0]["checkin"]["time"],
+                       REAL["stays"][0]["room"]):
+            self.assertNotIn(hidden, outside, f"«{hidden}» осталось снаружи карточки")
+        # Внутри — всё то же самое, ни одной потери: у каждого города своя
+        # стрелка, и в ней его бронь со сроком.
+        folds = re.findall(r"<details class=\"stayfine\">(.*?)</details>", cards, flags=re.S)
+        self.assertEqual(len(folds), 4, "стрелка у каждого из четырёх городов")
+        inside = " ".join(folds)
+        for s in REAL["stays"]:
+            self.assertIn(f'id="{s["id"]}"', inside, s["name"])
+            self.assertIn(s["cancel"]["free_until"], inside, s["name"])
+            self.assertIn(s["phone"], inside, s["name"])
+        # И снаружи остаётся то, ради чего карточка стоит на странице.
+        for kept in ("class=\"name\"", "class=\"hotel\"", "class=\"span\"", "class=\"price\""):
+            self.assertIn(kept, outside, kept)
+
     def test_a_place_hung_on_a_missing_booking_is_caught(self):
         """Опечатка в «stay» — это место, которое молча не покажется."""
         data = broken()
@@ -682,16 +711,38 @@ class WhatCostsMoneyIsOnTop(unittest.TestCase):
 
     # ── чего в итоге нет
 
-    def test_the_total_says_out_loud_that_it_is_not_everything(self):
-        block = re.search(r'<p class="notall">(.*?)</p>', self.html, re.S)
-        self.assertIsNotNone(block, "строки «чего в итоге нет» под чеком нет")
-        said = block.group(1)
+    def test_the_crossed_out_line_is_off_and_the_list_is_kept(self):
+        """Ни вычеркнула строку 24 августа — ушёл показ, а не список.
+
+        Проверка перевёрнута, а не удалена: строка, убранная по её слову,
+        обязана краснеть, если вернётся сама. И список обязан остаться в
+        данных — попросит вернуть, и собирать его заново будет не из чего.
+        """
+        self.assertIs(REAL.get("not_in_total_show"), False,
+                      "показ выключен флагом, а не вырезанием данных")
+        self.assertTrue(REAL["not_in_total"], "сам список остался в `trip.json`")
+        self.assertNotIn('class="notall"', self.html,
+                         "вычеркнутая строка вернулась на страницу сама")
+
+    def test_the_line_still_knows_how_to_come_back(self):
+        """Одного флага довольно, чтобы строка встала на своё прежнее место.
+
+        Показ выключен её словом, но выключенное умирает молча: год спустя
+        `not_in_total_show: true` мог бы уже ничего не включить, и узналось бы
+        это в тот день, когда она попросит вернуть. Поэтому здесь строка
+        собирается со включённым флагом — целиком и на своём месте.
+        """
+        data = copy.deepcopy(REAL)
+        data["not_in_total_show"] = True
+        html = render(data)
+        said = re.search(r'<p class="notall">(.*?)</p>', html, re.S)
+        self.assertIsNotNone(said, "флаг включён, а строки нет")
         for named in REAL["not_in_total"]:
-            self.assertIn(named, said, named)
-        # Строка стоит внутри чека и выше разбивки оплаты: в одном взгляде с
-        # цифрой, а не четырьмя строками ниже.
+            self.assertIn(named, said.group(1), named)
+        # И на прежнем месте: внутри чека, выше разбивки оплаты — в одном
+        # взгляде с цифрой, а не четырьмя строками ниже.
         total = re.search(r'<div class="total" id="check">(.*?)<div class="bar"',
-                          self.html, re.S).group(1)
+                          html, re.S).group(1)
         self.assertIn('class="notall"', total)
 
     def test_a_number_in_that_line_is_caught(self):
@@ -757,8 +808,17 @@ class TheFlightIsShownOnceAndCountedOnce(unittest.TestCase):
         blanks = re.search(r'<div class="unknown">(.*?)</div>\s*</section>',
                            self.html, re.S).group(1)
         self.assertNotIn("ерел", blanks, "«ещё не посчитано» про уже оплаченный билет")
-        notall = re.search(r'<p class="notall">(.*?)</p>', self.html, re.S).group(1)
-        self.assertNotIn("ерел", notall, "«в это число не входит» про то, что входит")
+        # Строку «в это число не входит» Ни вычеркнула 24 августа, но список
+        # под ней остался в данных и остался включаемым одним флагом. Поэтому
+        # сверяется он сам, а не только собранная страница: перелёт, вернувшийся
+        # в этот список, — второй счёт того же билета, и молчание страницы его
+        # не отменяет, а только откладывает до дня, когда строку вернут.
+        self.assertFalse([x for x in REAL["not_in_total"] if "ерел" in x],
+                         "«в это число не входит» про то, что входит")
+        back = copy.deepcopy(REAL)
+        back["not_in_total_show"] = True
+        notall = re.search(r'<p class="notall">(.*?)</p>', render(back), re.S).group(1)
+        self.assertNotIn("ерел", notall, "и на странице тоже, когда строку вернут")
 
     def test_calling_the_flight_uncounted_again_is_caught(self):
         """Слово, возвращённое в данные, — это тот же второй счёт."""
@@ -815,23 +875,45 @@ class TheFlightIsShownOnceAndCountedOnce(unittest.TestCase):
         outside = " ".join(f.split("</summary>")[0] for f in folds)
         self.assertNotIn("TK", outside)
 
-    def test_the_ticket_says_out_loud_that_there_is_no_free_cancellation(self):
-        """Срока у билета нет вовсе — и это сказано словом, а не пустотой.
+    def test_no_deadline_is_invented_for_the_ticket_even_in_silence(self):
+        """Срока у билета нет — и выдумать его нельзя даже теперь, когда молчим.
 
-        Наверх, к срокам отелей, перелёт не идёт: выдуманная дата там была бы
-        худшим видом подсказки. Но и молчать нельзя — отмена без срока стоит
-        дороже всех штрафов в этом блоке.
+        Фразу «бесплатной отмены нет: срока, до которого деньги вернут, у
+        билета не существует» Ни вычеркнула 24 августа
+        (`say_no_free_cancel: false`). Ушёл ровно этот пересказ; правило под ним
+        не сдвинулось ни на шаг, и проверяется здесь именно оно: `free_cancel`
+        обязан остаться `false`, штрафы за обмен и возврат — на месте, а наверх,
+        к срокам отелей, перелёт по-прежнему не идёт. Выдуманная дата там —
+        худший вид подсказки, и молчание её не оправдывает.
         """
         self.assertIs(self.fly["rules"]["free_cancel"], False)
+        self.assertIs(self.fly.get("say_no_free_cancel"), False,
+                      "молчим по её слову, а не потому что забыли сказать")
         ticket = re.search(r'<details class="fly-fold tkt">(.*?)</details>',
                            self.html, re.S).group(1)
-        self.assertIn("бесплатной отмены нет", ticket)
-        self.assertIn("не существует", ticket, "сказано, что даты нет, а не что она позже")
+        self.assertNotIn("бесплатной отмены нет", ticket,
+                         "вычеркнутая фраза вернулась на страницу сама")
+        for rule in ("change", "refund"):
+            self.assertIn(self.fly["rules"][rule], ticket,
+                          "штрафы за обмен и возврат она не вычёркивала")
         head = re.search(r'<details class="deadlines">(.*?)</details>', self.html, re.S).group(1)
         self.assertEqual(head.count("data-deadline="), len(REAL["stays"]),
                          "сроки наверху — только отельные")
         for word in ("Turkish", "Ханэда", "Нарита"):
             self.assertNotIn(word, head, "перелёту срок не выдуман")
+
+    def test_the_sentence_still_knows_how_to_come_back(self):
+        """Выключенные слова умирают молча — проверяем, что эти живы.
+
+        Год спустя `say_no_free_cancel: true` мог бы уже ничего не включить, и
+        узналось бы это в тот день, когда она попросит вернуть фразу.
+        """
+        data = copy.deepcopy(REAL)
+        data["flights"]["say_no_free_cancel"] = True
+        ticket = re.search(r'<details class="fly-fold tkt">(.*?)</details>',
+                           render(data), re.S).group(1)
+        self.assertIn("бесплатной отмены нет", ticket)
+        self.assertIn("не существует", ticket, "сказано, что даты нет, а не что она позже")
 
     def test_the_three_notes_are_shown_not_folded(self):
         """Примечания про планирование, а не про билет: они стоят открытыми."""
