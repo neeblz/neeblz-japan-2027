@@ -31,6 +31,12 @@
 До её потолка в 1800 осталось 10 точек. Следующее, что вырастет, придётся
 чем-то оплатить — или спросить у неё, поднимать ли потолок.
 
+Линейка «иены → доллары» 24 августа не стоила ни точки: средний столбец чека
+был на 137 точек ниже левого, и она встала целиком в эту пустоту. Здесь это
+сторожится отдельным правилом — средний столбец обязан остаться не выше
+левого, — потому что высота документа заметит только тот день, когда он
+перерастёт, а перерастёт он сразу на всю разницу.
+
 Меряется страница **как она уезжает** — пустая. Её записи приходят из
 хранилища и растят её дальше: это её список, и складывать его она может сама.
 
@@ -326,6 +332,74 @@ with sync_playwright() as pw:
     want(page.locator(".notall").bounding_box()["y"]
          < page.locator(".total .bar").bounding_box()["y"],
          "строка стоит вплотную к сумме, а не в подвале чека")
+
+    # ── линейка: иены в доллары и обратно
+    #
+    # Считается здесь, а не в разметке, потому что тут и есть вся вещь: два
+    # поля, которые заполняют друг друга. Курс прибит числом нарочно — тихая
+    # правка курса обязана краснеть, а не пересчитать её деньги молча.
+    RATE = 158.88
+    ruler = page.locator(".convert")
+    want(ruler.count() == 1 and ruler.is_visible(),
+         "линейка на виду, а не под стрелкой")
+    want("¥" in ruler.inner_text() and "$" in ruler.inner_text(),
+         "у полей подписаны обе валюты")
+
+    jpy, usd = page.locator('[data-conv="jpy"]'), page.locator('[data-conv="usd"]')
+    jpy.fill("10 000")
+    page.wait_for_timeout(60)
+    want(usd.input_value().replace(" ", "") == str(round(10_000 / RATE)),
+         f'¥10 000 → ${usd.input_value()} (по курсу {round(10_000 / RATE)})')
+    usd.fill("100")
+    page.wait_for_timeout(60)
+    want(jpy.input_value().replace(" ", "") == str(round(100 * RATE)),
+         f'$100 → ¥{jpy.input_value()} (по курсу {round(100 * RATE)})')
+    # Пустое поле — не ноль: ноль на этой странице значит «бесплатно».
+    usd.fill("")
+    page.wait_for_timeout(60)
+    want(jpy.input_value() == "", "стёрла у себя — стёрлось и напротив")
+    jpy.fill("не число")
+    page.wait_for_timeout(60)
+    want(usd.input_value() == "", "из букв доллары не получаются")
+    jpy.fill("")
+
+    said = " ".join(page.locator(".convert .fx").inner_text().split())
+    want(str(RATE) in said and "2026" in said, f"под полями курс с датой: «{said}»")
+    want("иенах" in said and "округлен" in said,
+         f"сказано, чем она платит и что доллар — мерка: «{said}»")
+
+    # Место линейки: она встала в пустоту среднего столбца чека, и страница от
+    # неё не выросла ни на точку. Правило сторожит именно это — вырастет
+    # столбец выше левого, и высота уедет в потолок следом.
+    col = page.locator(".ledger .col").bounding_box()["height"]
+    left = page.locator(".total").bounding_box()["height"]
+    want(col <= left,
+         f"линейка живёт в пустоте среднего столбца ({col:.0f}px против {left:.0f}px)")
+
+    # ── багаж: кто везёт, куда нажимать и почём — одним куском
+    #
+    # Ни 2026-08-24: «в трёх местах пишем про багаж и нигде не указываем сайт».
+    fold = page.locator('details.more[data-fold="luggage"]')
+    tag = " ".join(fold.locator("summary .tag").inner_text().split())
+    want("Yamato" in tag and "¥" in tag,
+         f"кто везёт и почём видно, не открывая: «{tag}»")
+    fold.locator("summary").click()
+    page.wait_for_timeout(150)
+    who = " ".join(page.locator("#luggage .who").inner_text().split())
+    want("TA-Q-BIN" in who, f"услуга названа: «{who[:60]}…»")
+    want("стойке отеля" in who, "сказано, что заказывается на стойке, а не кнопкой")
+    want("4 600" in who.replace(" ", " ").replace("\xa0", " "),
+         "цена стоит там же")
+    site = page.locator("#luggage .who a.btn.site")
+    # Сначала счёт, потом всё остальное: у пустого места нет ни адреса, ни
+    # размера, и спрашивать их — это тридцать секунд ожидания вместо «✗».
+    want(site.count() == 1, f"ссылка на службу — рядом с ценой ({site.count()})")
+    if site.count() == 1:
+        want("kuronekoyamato" in site.get_attribute("href"),
+             f'ведёт к службе: {site.get_attribute("href")}')
+        want(site.bounding_box()["height"] >= 20, "по ссылке можно попасть")
+    fold.locator("summary").click()
+    page.wait_for_timeout(120)
 
     # ── контраст: сначала как она увидит, потом со всем развёрнутым
     contrast(page, "1440, свёрнуто")

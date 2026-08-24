@@ -265,7 +265,33 @@ def check(trip: dict) -> list[str]:
         if re.search(r"\d", x):
             raise Failed(f'«{x}» в списке «чего нет в итоге»: числам там не место')
 
-    # 9. Никаких секретов в данных. Ключи с подчёркивания — записки самому
+    # 9. Служба доставки названа ровно один раз — в `luggage.service`.
+    #
+    #    Ни 2026-08-24: «мы в трёх местах пишем про багаж и нигде не указываем
+    #    сайт». Собрать это в один блок — работа на полчаса; удержать собранным
+    #    — работа навсегда, потому что следующая правка так же естественно
+    #    допишет «Yamato» в подробности отеля, как естественно оно там и
+    #    появилось. Дублируется при этом не слово, а цена и условия: расходятся
+    #    они молча, а замечаются в чужой стране на стойке.
+    #
+    #    Ссылка проверяется по форме, а не по доброте: без https и без подписи
+    #    она превращается в ту самую ссылку, которая ничего не называет.
+    svc = trip["luggage"]["service"]
+    if not svc.get("site", "").startswith("https://") or not svc.get("site_label"):
+        raise Failed("у службы доставки должна быть https-ссылка и подпись к ней")
+    elsewhere = json.dumps(
+        {k: (v if k != "luggage" else {x: y for x, y in v.items() if x != "service"})
+         for k, v in trip.items() if not k.startswith("_")},
+        ensure_ascii=False,
+    )
+    for word in (svc["name"].split()[0], "TA-Q-BIN", "宅急便"):
+        if re.search(re.escape(word), elsewhere, re.I):
+            raise Failed(f'«{word}» названо не только в `luggage.service` — '
+                         "про багаж мы уже писали в трёх местах")
+    said.append(f'чемодан везёт {svc["name"]}, {svc["product"]} — '
+                f'{trip["luggage"]["cost"]}')
+
+    # 10. Никаких секретов в данных. Ключи с подчёркивания — записки самому
     #    себе о том, чего сюда класть нельзя; они перечисляют запретные слова
     #    и поэтому в досмотр не идут, иначе инструкция запрещала бы сама себя.
     blob = json.dumps(
@@ -873,6 +899,41 @@ def adder(trip: dict, all_legs: list) -> str:
 </section>"""
 
 
+def converter() -> str:
+    """Счётная линейка: иены в доллары и обратно, два поля и всё.
+
+    Её слово 2026-08-24: «мне нужен конвертер из йен в доллары и обратно.
+    небольшой, где-нибудь». «Небольшой» здесь не про место на экране, а про
+    список того, чего тут нет: ни истории, ни второй валюты, ни кнопки
+    «посчитать». Вписала — увидела.
+
+    **Курс не свой.** Числа тут нигде в разметке нет: браузер берёт его из
+    того же `#japan-data`, из которого чек считает её записи. Второй курс на
+    странице — это два числа с одним именем, и разойтись они обязаны в самый
+    неподходящий момент. Подпись под полями напечатана из того же `fx`
+    сборкой, поэтому спорить ей не с чем.
+
+    **Считается тем же `money.js`**, что и весь чек: иена → доллар делением с
+    округлением, доллар → иена умножением. Своя арифметика здесь была бы
+    третьим способом посчитать одно и то же.
+
+    Ничего не сохраняется и никуда не ходит: набранное живёт до перезагрузки.
+    Это линейка, а не запись, — записи у неё есть отдельно и с кнопкой.
+    """
+    return f"""
+<div class="convert">
+  <p class="cap">пересчитать</p>
+  <div class="pair">
+    <span class="fld"><i aria-hidden="true">¥</i><input type="text" inputmode="numeric"
+       data-conv="jpy" aria-label="сумма в иенах" placeholder="0" autocomplete="off"></span>
+    <i class="swap" aria-hidden="true">⇄</i>
+    <span class="fld"><i aria-hidden="true">$</i><input type="text" inputmode="decimal"
+       data-conv="usd" aria-label="сумма в долларах" placeholder="0" autocomplete="off"></span>
+  </div>
+  <p class="fx">$1 = ¥{FX["usd_per_jpy"]} на {fx_human_date()} · платится в иенах, округлено</p>
+</div>"""
+
+
 def ledger(trip: dict, stays: list, all_legs: list) -> str:
     """Деньги и честно пустые места рядом.
 
@@ -931,9 +992,16 @@ def ledger(trip: dict, stays: list, all_legs: list) -> str:
     <ul class="parts" data-parts hidden></ul>
     <p class="says" data-says role="status"></p>
   </div>
-  <div class="beyond">
-    <p class="cap">сверх этого — считается на месте</p>
-    <ul class="caveats">{caveats}</ul>
+  <!-- Средний столбец чека был на 137 точек ниже левого — эта пустота и есть
+       всё место, которое понадобилось линейке. Стоять ей больше негде: под
+       суммой она вытолкнула бы страницу за её потолок, а «где-нибудь ещё» на
+       странице про деньги значит «подальше от денег». -->
+  <div class="col">
+    <div class="beyond">
+      <p class="cap">сверх этого — считается на месте</p>
+      <ul class="caveats">{caveats}</ul>
+    </div>
+    {converter()}
   </div>
   <div class="unknown">
     <p class="cap">ещё не посчитано</p>
@@ -1035,24 +1103,44 @@ def by_day(trip: dict, stays: list, alerts: list) -> str:
 
 
 def luggage(trip: dict) -> str:
+    """Чемодан — одним куском: кто везёт, куда нажимать, сколько стоит, когда едет.
+
+    Её слово 2026-08-24: «мы в трёх местах пишем про багаж и нигде не указываем
+    сайт, откуда вызывать доставку». Три места были — то-до, подробности OMO3 и
+    этот блок; в каждом стояло по половине «как», и ни в одном — имя службы со
+    ссылкой и цена рядом.
+
+    Первое, что говорит блок теперь, — что нажимать негде: TA-Q-BIN
+    заказывается на стойке отеля. Ссылка ведёт не на главную компании (она
+    называет три вида бизнеса и ни одного слова про чемодан гостя), а на
+    страницу самой услуги — правило то же, что у отелей: ссылка, которая не
+    называет вещь, хуже отсутствующей.
+    """
     lug = trip["luggage"]
     moves = "".join(
         f"""<li>
           <p class="when">{day_month(m["date"])}, {weekday(m["date"])}</p>
           <p class="path"><span>{e(m["from"])}</span><i aria-hidden="true">→</i><span>{e(m["to"])}</span></p>
-          <p class="how">{e(m["how"])}</p>
           <p class="note">{e(m["note"])}</p>
         </li>"""
         for m in lug["moves"]
     )
     always = "".join(f"<li>{e(x)}</li>" for x in lug["always"])
+    svc = lug["service"]
     # Пересылка чемодана стоит денег и в чек не идёт — цена стоит рядом с самой
     # пересылкой, а не только в строке «чего в итоге нет».
-    cost = f'<p class="cost">{e(lug["cost"])}</p>' if lug.get("cost") else ""
+    cost = (f'<p class="cost"><b>{e(lug["cost"])}</b>'
+            f'<span>{e(svc["size"])}</span></p>') if lug.get("cost") else ""
     return f"""
 <div id="luggage">
   <p class="lead">{e(lug["lead"])}</p>
-  {cost}
+  <div class="who">
+    <p class="name">{e(svc["name"])}<i aria-hidden="true">·</i>{e(svc["product"])}</p>
+    <p class="order">{e(svc["order"])}</p>
+    {cost}
+    <a class="btn site" href="{e(svc["site"])}"
+       target="_blank" rel="noreferrer noopener">{e(svc["site_label"])}</a>
+  </div>
   <ol class="moves">{moves}</ol>
   <ul class="always">{always}</ul>
 </div>"""
@@ -1088,7 +1176,14 @@ def more_block(trip: dict, stays: list, alerts: list) -> str:
     «куплено»), потом то, что читается («по дням», «багаж»). Заголовки
     первых двух показывают счёт и сумму — свёрнутое должно говорить, что
     внутри, само.
+
+    У багажа подпись стоит прямо в разметке, а не подставляется браузером:
+    имя службы и цена не зависят ни от её записей, ни от хранилища. Смысл тот
+    же — «кто везёт и почём» видно, не открывая; свёрнутое без подписи
+    превращается в вопрос, который приходится решать нажатием.
     """
+    svc = trip["luggage"]["service"]
+    tags = {"luggage": f'{svc["name"]} · {trip["luggage"]["cost"].split(" за ")[0]}'}
     parts = [
         ("todo", "Решить и забронировать", checklist(trip)),
         ("bought", "Куплено отдельно", bought()),
@@ -1097,7 +1192,8 @@ def more_block(trip: dict, stays: list, alerts: list) -> str:
     ]
     return "".join(
         f'<details class="more" data-fold="{e(key)}"><summary>{e(name)}'
-        f'<span class="tag" data-tag="{e(key)}"></span></summary>{body}</details>'
+        f'<span class="tag" data-tag="{e(key)}">{e(tags.get(key, ""))}</span>'
+        f'</summary>{body}</details>'
         for key, name, body in parts
     )
 
@@ -1485,10 +1581,34 @@ code{font-size:.88em; background:var(--sand); padding:1px 5px; border-radius:4px
 .legend b,.legend span{color:var(--quiet)}
 .legend b{color:var(--ink)}
 .legend b{font-family:var(--num); color:var(--ink); margin-right:5px}
-.beyond{flex:1 1 250px; max-width:330px}
+/* Средний столбец чека: «сверх этого» и линейка одна под другой. Ширину
+   держит он, а не они, — иначе линейка при пустом списке оговорок расползлась
+   бы на всю строку. */
+.ledger .col{flex:1 1 250px; max-width:330px}
+.beyond{max-width:330px}
 .caveats{list-style:none; margin:8px 0 0; padding:0; font-size:11.5px; color:var(--quiet)}
 .caveats li{padding:2px 0 2px 12px; position:relative; line-height:1.45}
 .caveats li::before{content:"+"; position:absolute; left:0; color:var(--gold)}
+
+/* ── линейка: иены в доллары и обратно
+
+   Два поля и знак между ними. Рамка пунктирная — та же, которой на этой
+   странице помечено «это не деньги в чеке»: у желаний и у пустых полей. Иначе
+   набранная тысяча читалась бы как ещё одна сумма поездки.
+   Поля ростом 38 точек: на телефоне в них надо попадать пальцем. */
+.convert{margin-top:14px; border-top:1px dashed var(--rule); padding-top:10px}
+.convert .pair{display:flex; align-items:center; gap:8px; margin-top:8px}
+.convert .fld{flex:1 1 0; min-width:0; display:flex; align-items:center; gap:5px;
+  background:var(--card); border:1px solid var(--rule); border-radius:7px; padding:0 9px;
+  height:38px}
+.convert .fld:focus-within{border-color:var(--gold); box-shadow:0 0 0 2px rgba(124,97,56,.18)}
+.convert .fld i{font-style:normal; font-size:13px; color:var(--gold); font-weight:700}
+.convert input{flex:1 1 0; min-width:0; width:100%; border:0; background:none; padding:0;
+  font-family:var(--num); font-size:14px; color:var(--ink); height:100%}
+.convert input:focus{outline:none}
+.convert input::placeholder{color:var(--quiet); opacity:1}
+.convert .swap{font-style:normal; font-size:13px; color:var(--quiet); flex:none}
+.convert .fx{margin:7px 0 0; font-size:10.5px; color:var(--quiet); line-height:1.5}
 .unknown{margin-left:auto}
 .unknown .slots{display:flex; gap:9px; margin-top:8px; flex-wrap:wrap}
 .blank{width:132px; border:1px dashed var(--rule); border-radius:4px; padding:8px 10px 7px;
@@ -1651,11 +1771,24 @@ input:checked ~ .txt{color:var(--deep); text-decoration:line-through}
 #luggage .path{margin:5px 0 0; font-size:14.5px; font-family:var(--serif); display:flex;
   gap:8px; flex-wrap:wrap; align-items:baseline}
 #luggage .path i{color:var(--bronze); font-style:normal}
-#luggage .how{margin:4px 0 0; font-size:12.5px; font-weight:600}
 #luggage .note{margin:1px 0 0; font-size:11.5px; color:var(--quiet)}
 #luggage .lead{margin:0 0 12px; font-size:14px}
-#luggage .cost{margin:-8px 0 12px; font-family:var(--num); font-size:12.5px;
-  color:var(--bronze); font-weight:600}
+/* Кто везёт — первым и рамкой: до 24 августа имя службы и цена лежали порознь,
+   а ссылки не было вовсе. Ссылка стоит внутри той же рамки, что и цена, чтобы
+   «сколько» и «где смотреть» не приходилось искать по разным углам. */
+#luggage .who{background:var(--sand); border:1px solid var(--hair); border-radius:10px;
+  padding:12px 14px; margin:0 0 14px}
+#luggage .name{margin:0; font-family:var(--serif); font-size:15px; font-weight:600}
+#luggage .name i{font-style:normal; color:var(--bronze); margin:0 7px}
+#luggage .order{margin:5px 0 0; font-size:12.5px; color:var(--deep); line-height:1.45}
+#luggage .cost{margin:8px 0 0; font-size:12.5px; display:flex; flex-wrap:wrap;
+  gap:2px 9px; align-items:baseline}
+/* Строка цены — это число вперемешку со словами («за обе пересылки»), а
+   моноширинный шрифт страницы стоит на числах. Целиком в нём она читается как
+   код, поэтому здесь только жирный бронзовый. */
+#luggage .cost b{color:var(--bronze); font-weight:700}
+#luggage .cost span{color:var(--quiet); font-size:11.5px}
+#luggage .who .btn{margin-top:9px}
 .always{list-style:none; margin:0; padding:0; font-size:12.5px; color:var(--quiet)}
 .always li{padding:3px 0 3px 17px; position:relative}
 .always li::before{content:"✓"; position:absolute; left:0; color:var(--moss); font-size:11px}
@@ -1804,6 +1937,52 @@ JS = """
      нельзя доверить визу. Ключ `japan2027.todo.v1` в localStorage больше не
      пишется и не читается; старое значение, если оно там осталось, просто
      лежит мёртвым грузом и ни на что не влияет. */
+
+  /* ── линейка: иены в доллары и обратно
+     ────────────────────────────────────────────────────────────────────
+     Стоит здесь, а не в «её странице», нарочно: линейка обязана считать при
+     мёртвом хранилище и без сети. Ни хранилища, ни сети она не касается —
+     набранное живёт до перезагрузки и никуда не уезжает.
+
+     Курс берётся из того же `#japan-data`, что и чек, и считается тем же
+     `money.js`. Своего числа и своей арифметики у линейки нет: два способа
+     посчитать одно и то же — это два разных числа с одним именем.
+
+     Заполняется всегда **другое** поле, а не то, в котором печатают: иначе
+     «1 000» превращалось бы в «1000» под пальцем, а курсор прыгал бы в конец
+     на каждом знаке. */
+  var ruler = document.querySelector(".convert");
+  var island = document.getElementById("japan-data");
+  if (ruler && island && window.JapanMoney) {
+    var fx = JSON.parse(island.textContent).fx;
+    var THIN = "\\u202f";
+    var jpyBox = ruler.querySelector('[data-conv="jpy"]');
+    var usdBox = ruler.querySelector('[data-conv="usd"]');
+
+    function group(n){
+      return String(n).replace(/\\B(?=(\\d{3})+(?!\\d))/g, THIN);
+    }
+    /* Она пишет так, как удобно: «1 000», «1,000», «1000». Разделителем
+       считаем всё, что не цифра и не точка с запятой; запятая в дробной части
+       — это та же точка. Пустое и «просто минус» — не число, а не ноль:
+       ноль на этой странице значит «бесплатно». */
+    function num(raw){
+      var s = raw.replace(/[^\\d.,-]/g, "").replace(",", ".");
+      if (!/\\d/.test(s)) return null;
+      var v = parseFloat(s);
+      return isFinite(v) && v >= 0 ? v : null;
+    }
+    function link(from, to, convert){
+      from.addEventListener("input", function(){
+        var v = num(from.value);
+        to.value = v === null ? "" : group(convert(v));
+      });
+    }
+    link(jpyBox, usdBox, function(v){ return JapanMoney.toUsd(v, fx); });
+    link(usdBox, jpyBox, function(v){
+      return JapanMoney.yenOf({ amount: v, currency: "usd" }, fx);
+    });
+  }
 })();
 """
 

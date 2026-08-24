@@ -366,7 +366,7 @@ class PageShowsIt(unittest.TestCase):
     def test_nothing_is_lost_from_the_long_page(self):
         """Короче — не значит меньше: списки, дни и багаж просто свёрнуты."""
         for kept in ("Решить и забронировать", "Куплено отдельно", "По дням", "Багаж",
-                     "Осака — однодневная вылазка", "Yamato TA-Q-BIN"):
+                     "Осака — однодневная вылазка", "Yamato Transport", "TA-Q-BIN"):
             self.assertIn(kept, self.html, kept)
         self.assertEqual(self.html.count('<details class="more"'), 4)
 
@@ -491,8 +491,8 @@ class SheWritesHereHerself(unittest.TestCase):
         Собранная страница знает только жильё — и говорит «жильё». Заголовок
         «вся поездка» появляется вместе с её записями, а не до них.
         """
-        block = re.search(r'<div class="total" id="check">(.*?)</div>\s*<div class="beyond">',
-                          self.html, re.S).group(1)
+        block = re.search(r'<div class="total" id="check">(.*?)</div>\s*<!--.*?-->\s*'
+                          r'<div class="col">', self.html, re.S).group(1)
         cap = re.search(r'<p class="cap" data-cap>(.*?)</p>', block, re.S).group(1)
         self.assertIn("жильё", cap)
         self.assertNotIn("вся поездка", block,
@@ -637,6 +637,137 @@ class WhatCostsMoneyIsOnTop(unittest.TestCase):
     def test_the_suitcase_price_is_next_to_the_suitcase(self):
         """Пересылка стоит денег и в чек не идёт — цена рядом с ней самой."""
         self.assertIn(REAL["luggage"]["cost"], self.html)
+
+
+class TheSuitcaseIsInOnePlace(unittest.TestCase):
+    """Ни 2026-08-24: «в трёх местах пишем про багаж и нигде не указываем сайт».
+
+    Про чемодан сказано в одном блоке, и в нём сказано главное: кто везёт,
+    как заказать, сколько стоит и куда смотреть.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.html = render(copy.deepcopy(REAL))
+
+    def test_the_block_says_who_carries_it_and_where_to_press(self):
+        svc = REAL["luggage"]["service"]
+        block = re.search(r'<div id="luggage">(.*?)<ol class="moves">',
+                          self.html, re.S).group(1)
+        self.assertIn(svc["name"], block, "имя службы стоит в блоке про багаж")
+        self.assertIn(svc["product"], block)
+        self.assertIn(svc["site"], block, "ссылка на службу доехала до страницы")
+        self.assertIn(REAL["luggage"]["cost"], block, "цена стоит рядом с именем")
+        # Нажимать негде — заказывается на стойке. Это первое, что должно быть
+        # сказано: иначе она будет искать кнопку заказа, которой нет.
+        self.assertIn("стойке отеля", block)
+
+    def test_the_link_names_the_thing_and_opens_in_a_new_tab(self):
+        """Ссылка на главную компании называет три вида бизнеса и ни одного —
+
+        нашу услугу. Поэтому в данных стоит страница самой услуги, а рядом с
+        ней записано, чем она открывалась: правило то же, что у отелей.
+        """
+        svc = REAL["luggage"]["service"]
+        self.assertTrue(svc["site"].startswith("https://"), svc["site"])
+        self.assertIn("takkyubin", svc["site"], "ссылка ведёт на саму услугу")
+        self.assertIn("TA-Q-BIN", svc["site_note"], "записано, что открылось глазами")
+        tag = re.search(r'<a class="btn site" href="' + re.escape(svc["site"]) + r'"[^>]*>',
+                        self.html.replace("\n", " "))
+        self.assertIsNotNone(tag, "ссылка на службу — настоящая ссылка")
+        self.assertIn("noopener", tag.group(0))
+
+    def test_the_name_is_said_once_and_the_build_holds_that(self):
+        """Собрать в один блок — полчаса; удержать собранным — навсегда.
+
+        Правило существует потому, что дублируется не слово, а цена и условия:
+        расходятся они молча, а замечаются на стойке в чужой стране.
+        """
+        data = broken()
+        data["todo"][2]["items"][0]["note"] = "Yamato TA-Q-BIN, со стойки отеля"
+        with self.assertRaises(Failed) as it:
+            check(data)
+        self.assertIn("не только в `luggage.service`", str(it.exception))
+
+    def test_a_link_without_a_label_is_caught(self):
+        data = broken()
+        data["luggage"]["service"]["site_label"] = ""
+        with self.assertRaises(Failed) as it:
+            check(data)
+        self.assertIn("подпись", str(it.exception))
+
+    def test_the_folded_summary_says_who_and_how_much(self):
+        """Свёрнутое без подписи — вопрос, который решается нажатием."""
+        tag = re.search(r'<span class="tag" data-tag="luggage">(.*?)</span>',
+                        self.html, re.S).group(1)
+        self.assertIn(REAL["luggage"]["service"]["name"], tag)
+        self.assertIn("¥4 600", tag.replace(" ", " ").replace("\xa0", " "))
+
+    def test_the_hotel_details_no_longer_repeat_it(self):
+        """Подробности OMO3 были вторым местом, где это было написано."""
+        omo3 = next(s for s in REAL["stays"] if s["id"] == "omo3")
+        said = " ".join(omo3["notes"])
+        self.assertNotIn("доставки", said)
+        self.assertIn("«Багаж»", said, "вместо копии — указание, где смотреть")
+
+
+class TheRuler(unittest.TestCase):
+    """Линейка: иены в доллары и обратно, и ни одного своего числа.
+
+    Ни 2026-08-24: «мне нужен конвертер из йен в доллары и обратно. небольшой,
+    где-нибудь». Счёт проверяется в браузере (`test/wide.py`) — здесь про то,
+    что у неё нет собственного курса и собственной арифметики.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.html = render(copy.deepcopy(REAL))
+
+    def test_it_is_two_fields_and_nothing_else(self):
+        block = re.search(r'<div class="convert">(.*?)</div>\s*</div>',
+                          self.html, re.S).group(1)
+        self.assertEqual(block.count("<input"), 2, "два поля — и всё")
+        self.assertIn('data-conv="jpy"', block)
+        self.assertIn('data-conv="usd"', block)
+        # Ни кнопки «посчитать», ни второй валюты, ни истории.
+        self.assertNotIn("<button", block)
+        for field in re.findall(r"<input[^>]*>", block.replace("\n", " ")):
+            self.assertIn("aria-label", field, field)
+
+    def test_there_is_no_second_rate_on_the_page(self):
+        """Второй курс — это два числа с одним именем.
+
+        Число печатается ровно там, где его читают глазами: в подписи под
+        чеком и в подписи под линейкой. Машине оно достаётся из одного места
+        — `#japan-data`, — а не из атрибута рядом с полями.
+        """
+        rate = str(REAL["fx"]["usd_per_jpy"])
+        self.assertEqual(self.html.count("$1 = ¥" + rate), 2,
+                         "курс подписан у чека и у линейки, и оба раза — этот")
+        self.assertNotIn("data-rate", self.html,
+                         "машинного второго экземпляра курса быть не должно")
+        self.assertEqual(len(set(re.findall(r"¥(\d+\.\d+)", self.html))), 1,
+                         "дробное число на странице одно — курс")
+
+    def test_the_caption_under_the_fields_is_honest(self):
+        """Курс, дата и то, что платит она в иенах, — под самими полями."""
+        said = " ".join(re.search(r'<p class="fx">(.*?)</p>',
+                                  re.search(r'<div class="convert">(.*?)</div>\s*</div>',
+                                            self.html, re.S).group(1), re.S).group(1).split())
+        self.assertIn(str(REAL["fx"]["usd_per_jpy"]), said)
+        self.assertIn("августа 2026", said, "курс подписан датой")
+        self.assertIn("иенах", said, "сказано, чем она платит на самом деле")
+        self.assertIn("округлено", said, "сказано, что доллар — мерка, а не точность")
+
+    def test_it_counts_with_the_same_money_js_as_the_check(self):
+        """Своя арифметика была бы третьим способом посчитать одно и то же."""
+        script = re.search(r'var ruler = document\.querySelector\(".convert"\);(.*?)\n  }',
+                           self.html, re.S).group(1)
+        self.assertIn("JapanMoney.toUsd", script)
+        self.assertIn("JapanMoney.yenOf", script)
+        self.assertNotIn("158.88", script, "курс не вписан в скрипт руками")
+        self.assertNotIn("localStorage", script, "линейка ничего не сохраняет")
+        self.assertNotIn("fetch", script, "линейка никуда не ходит")
 
 
 if __name__ == "__main__":
