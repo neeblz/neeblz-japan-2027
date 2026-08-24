@@ -18,9 +18,11 @@ import sys
 import unittest
 from datetime import date, timedelta
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+import build  # noqa: E402
 from build import (  # noqa: E402
     DATA, REF_DATA, SITE, Failed, check, check_reference, load_plan, ref_item,
     reference, render, write_plan,
@@ -1500,11 +1502,18 @@ class TheReferenceCannotPassAGuessOffAsAFact(unittest.TestCase):
         # Japan Web, подпись про страховку и две страховые, — а условия,
         # лимиты и цены ушли вместе с непроверенным пунктом про цену и с нашим
         # соображением. Отсюда «0 нет, 0 от нас» и 22 пункта вместо 24.
+        #
+        # Тем же вечером её просьба «добавь в полезное приложения, которые надо
+        # скачать для айфона» дала пятый блок: 10 пунктов, 22 → 32. Восемь
+        # подтверждены (ссылки открыты руками), два — наши: ловушка с SMS у
+        # такси и то, что скидочных карт в Японии нет.
         self.assertIn("справка, виза: 2 подтверждено, 2 нет, 0 от нас", said)
         self.assertIn("справка, до вылета: 4 подтверждено, 0 нет, 0 от нас", said)
         self.assertIn("5 подтверждено, 1 нет, 0 от нас", said)          # такс-фри
         self.assertIn("справка, деньги: 6 подтверждено, 1 нет, 1 от нас", said)
-        self.assertIn("22 пунктов", said)
+        self.assertIn("справка, приложения и полезное: 8 подтверждено, 0 нет, 2 от нас",
+                      said)
+        self.assertIn("32 пунктов", said)
 
     def test_every_item_is_drawn_as_what_it_is(self):
         """Сверка экрана с данными: у каждого пункта свой вид, и он тот самый."""
@@ -1566,6 +1575,74 @@ class TheReferenceCannotPassAGuessOffAsAFact(unittest.TestCase):
         self.assertIn(warn["text"], outside, "соображение видно, не открывая")
         self.assertIn("наше соображение", outside)
 
+    # ── блок, о котором сборка не знала
+    #
+    # Самая дорогая поломка этого раздела — не кривая вёрстка, а тишина: пятый
+    # блок «приложения и полезное» пролежал в `reference.json` невидимым, потому
+    # что `reference()` перечисляла блоки поимённо и знала только четыре. На
+    # экране его не было вовсе, и не сказал об этом ни один тест: все они
+    # смотрели на страницу, где этого блока просто нет, и были зелёными.
+    #
+    # Правило то же, что и у записей-мест: вещь, которая есть в данных и не
+    # видна на экране, хуже отсутствующей — про отсутствующую хотя бы знаешь.
+
+    def test_a_block_the_build_never_heard_of_still_shows_up(self):
+        """Шестой блок обязан появиться сам, без правки кода.
+
+        Блок берётся выдуманный и с выдуманным `id` — именно тот случай, ради
+        которого проверка и заведена: под него в сборке нет ни тона, ни
+        подсказки, ни строчки в разметке. Появиться он обязан всё равно, и
+        целиком: заголовок, вводная строка, пункт со своим происхождением.
+
+        Проверялась поломкой, а не только успехом: со старой `reference()`,
+        где блоки были перечислены поимённо, тест краснеет на первом же
+        `assertIn`.
+        """
+        data = copy.deepcopy(REF)
+        data["blocks"].append({
+            "id": "vydumka",
+            "title": "Выдуманный блок",
+            "lead": "Вводная строка выдуманного блока.",
+            "items": [{"text": "Выдуманный пункт, которого сборка не знает.",
+                       "verified": True}],
+        })
+        with mock.patch.object(build, "load_reference", return_value=data):
+            html = reference()
+
+        self.assertIn('data-ref="vydumka"', html, "новый блок нарисован")
+        body = re.search(r'data-ref="vydumka".*?</details>', html, re.S).group(0)
+        self.assertIn("Выдуманный блок", body, "и у него есть заголовок")
+        self.assertIn("Вводная строка выдуманного блока.", body, "и вводная строка")
+        self.assertIn("Выдуманный пункт, которого сборка не знает.", body,
+                      "и сам пункт, а не одна пустая свёртка")
+        self.assertIn('<li class="fact">', body,
+                      "происхождение у пункта то же самое, что у всех остальных")
+        # Свёрнутая строка обязана сказать, что под ней. Подсказки ей никто не
+        # писал — значит счёт пунктов, а не пустое место рядом с плюсом.
+        tag = re.search(r'data-ref-tag="vydumka">([^<]*)<', body).group(1)
+        self.assertEqual(tag, "1 пункт", f"запасная подпись говорит, что внутри: «{tag}»")
+        # И встаёт он в общую стопку, а не куда-нибудь мимо неё.
+        rows = re.search(r'<div class="ref-rows">(.*?)</div>\s*</section>', html, re.S)
+        self.assertIn('data-ref="vydumka"', rows.group(1),
+                      "новый блок стоит в той же стопке, что и остальные")
+
+    def test_the_known_blocks_keep_the_order_she_set(self):
+        """Порядок стопки — её, а не тот, в каком блоки дописывали в файл.
+
+        В данных они лежат визой, «до вылета», такс-фри, деньгами и
+        приложениями; на экране должны стоять по времени — до вылета → деньги →
+        такс-фри, и приложения следом. Перебор стал общим, и уронить этот
+        порядок теперь можно молча, одной перестановкой в словаре.
+        """
+        self.assertEqual(re.findall(r'data-ref="([a-z]+)"', self.html),
+                         ["visa", "documents", "money", "taxfree", "apps"])
+        # Виза при этом не в стопке: она выше всех и не под стрелкой.
+        rows = re.search(r'<div class="ref-rows">(.*?)</div>\s*</section>',
+                         self.html, re.S).group(1)
+        self.assertNotIn('data-ref="visa"', rows)
+        self.assertEqual(re.findall(r'data-ref="([a-z]+)"', rows),
+                         ["documents", "money", "taxfree", "apps"])
+
     # ── вес пункта: совет и пара (её правки 24 августа, вечер)
 
     def test_the_thing_to_do_beforehand_is_drawn_as_advice(self):
@@ -1574,19 +1651,33 @@ class TheReferenceCannotPassAGuessOffAsAFact(unittest.TestCase):
         Совет отличается от строки списка словом и своей плоскостью, но
         происхождение остаётся первым классом: выделенный пункт не перестаёт
         быть подтверждённым фактом, и подменить одно другим нельзя.
+
+        Проверяется у каждого блока, где совет есть, а не у одного «до вылета»:
+        с приложениями их стало два (Visit Japan Web и Suica в Apple Wallet), и
+        `re.search` по всей странице находил бы первый, молча пропуская второй.
         """
-        docs = [b for b in REF["blocks"] if b["id"] == "documents"][0]
-        lead = [i for i in docs["items"] if i.get("lead") is True]
-        self.assertEqual(len(lead), 1, "совет в блоке один, иначе он ничего не выделяет")
-        row = re.search(r'<li class="fact ahead">(.*?)</li>', self.html, re.S)
-        self.assertTrue(row, "совет нарисован советом, происхождение — первым классом")
-        self.assertIn("стоит сделать заранее", row.group(1))
-        self.assertIn(lead[0]["text"], row.group(1))
-        # И он стоит первым в блоке: совет после списка — это уже сноска.
-        body = re.search(r'data-ref="documents".*?<ul class="facts">(.*?)</ul>',
-                         self.html, re.S).group(1)
-        self.assertTrue(body.startswith('<li class="fact ahead">'),
-                        "совет стоит первым, а не в общем ряду")
+        withlead = [b for b in REF["blocks"]
+                    if any(i.get("lead") is True for i in b["items"])]
+        self.assertEqual([b["id"] for b in withlead], ["documents", "apps"],
+                         "советов на странице два: Visit Japan Web и Suica")
+        for block in withlead:
+            lead = [i for i in block["items"] if i.get("lead") is True]
+            self.assertEqual(len(lead), 1,
+                             f'совет в блоке «{block["id"]}» один, иначе он ничего '
+                             "не выделяет")
+            # Ищется внутри своего блока: два совета на странице, и «нашёлся
+            # хоть один» здесь ничего не доказывает.
+            body = re.search(f'data-ref="{block["id"]}".*?<ul class="facts">(.*?)</ul>',
+                             self.html, re.S).group(1)
+            row = re.search(r'<li class="fact ahead">(.*?)</li>', body, re.S)
+            self.assertTrue(row, f'совет блока «{block["id"]}» нарисован советом, '
+                                 "происхождение — первым классом")
+            self.assertIn("стоит сделать заранее", row.group(1))
+            self.assertIn(lead[0]["text"], row.group(1))
+            # И он стоит первым в блоке: совет после списка — это уже сноска.
+            self.assertTrue(body.startswith('<li class="fact ahead">'),
+                            f'совет блока «{block["id"]}» стоит первым, а не в '
+                            "общем ряду")
 
     def test_the_two_insurers_read_as_a_pair(self):
         """«Страховки без подробностей оставь ссылки» — подпись и две ссылки.
@@ -1721,6 +1812,17 @@ class TheReferenceCannotPassAGuessOffAsAFact(unittest.TestCase):
         Japan Web переехал наверх блока — он теперь совет, а не строка списка,
         и стоит перед страховками. Порядок здесь не украшение: он же и есть
         порядок чтения на экране.
+
+        **Одиннадцать с блока приложений** — шесть новых, и пять из них ведут
+        в App Store. Шестая, Tabelog, ведёт **на сайт**, а не в магазин
+        приложений: проверенной ссылки на само приложение нет, и в тексте
+        пункта про это сказано прямо. Прибитый список ловит ровно эту разницу —
+        адрес, который однажды тихо подменят на «наверное, тот самый».
+
+        Этот тест покраснел не от правки списка, а от того, что блок наконец
+        стал рисоваться: ссылки лежали в данных с самого начала, но `reference`
+        перечислял блоки поимённо и пятого не знал. Проверка «ссылки только
+        открытые руками» всё это время смотрела на страницу без шести из них.
         """
         links = re.findall(r'<a class="btn" href="([^"]+)"', self.html)
         self.assertEqual(links, [
@@ -1729,7 +1831,23 @@ class TheReferenceCannotPassAGuessOffAsAFact(unittest.TestCase):
             "https://www.gpih.ge/ინდივიდუალური/სამოგზაურო-დაზღვევა/",
             "https://tbcinsurance.ge/ge/personal/travel/travel-insurance",
             "https://www.sevenbank.co.jp/intlcard/index2.html",
+            "https://apps.apple.com/app/google-translate/id414706506",
+            "https://apps.apple.com/us/app/voicetra/id581137577",
+            "https://apps.apple.com/us/app/go-taxi-app-for-japan-visit/id1254341709",
+            "https://smart-ex.jp/en/",
+            "https://apps.apple.com/us/app/safety-tips/id858357174",
+            "https://tabelog.com/en/",
         ])
+        # Tabelog — единственная ссылка справки, которая ведёт не туда, куда
+        # её сосед по блоку. Молчание об этом было бы хуже отсутствия ссылки:
+        # человек, ткнувший «Tabelog» в списке приложений, ждёт App Store.
+        tabelog = [i for b in REF["blocks"] if b["id"] == "apps"
+                   for i in b["items"] if i.get("link") == "https://tabelog.com/en/"]
+        self.assertEqual(len(tabelog), 1)
+        self.assertIn("сайт", tabelog[0]["link_label"].lower(),
+                      "подпись ссылки говорит, что это сайт, а не приложение")
+        self.assertIn("прямой ссылки не даю", tabelog[0]["text"],
+                      "и в самом пункте сказано, почему её нет")
         self.assertIn('rel="noreferrer noopener"', self.html)
         self.assertEqual(self.html.count('rel="noreferrer noopener"'), len(links),
                          "каждая ссылка открывается отдельно и без доступа к странице")
