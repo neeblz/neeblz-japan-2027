@@ -416,8 +416,20 @@ class PageShowsIt(unittest.TestCase):
             self.assertIn("noopener", tag, tag)
 
     def test_no_secret_shaped_thing_reached_the_page(self):
-        for pattern in (r"[\w.+-]+@[\w-]+\.[\w.]+", r"(?i)\b(pin|пароль|номер брони)\b"):
-            self.assertIsNone(re.search(pattern, self.html), pattern)
+        self.assertIsNone(re.search(r"(?i)\b(pin|пароль|номер брони)\b", self.html))
+        # Почта на странице появилась 24 августа — консульский отдел посольства
+        # Японии в Грузии, опубликованный адрес учреждения. Правило поэтому не
+        # снято, а сужено: почтовый адрес допустим ровно тот, что стоит в тексте
+        # справки. Адрес, приехавший откуда угодно ещё — из броней, из плана, из
+        # её записей, — по-прежнему делает этот тест красным.
+        # Точка в конце предложения попадает в найденное с обеих сторон —
+        # поэтому и там и там срезается, а не только на странице.
+        allowed = {x.rstrip(".") for x in re.findall(
+            r"[\w.+-]+@[\w-]+\.[\w.]+",
+            " ".join(i["text"] for b in REF["blocks"] for i in b["items"]))}
+        self.assertTrue(allowed, "если почт в справке нет, правило должно быть строгим")
+        for found in re.findall(r"[\w.+-]+@[\w-]+\.[\w.]+", self.html):
+            self.assertIn(found.rstrip("."), allowed, f"на страницу утекла почта: {found}")
 
 
 class SheWritesHereHerself(unittest.TestCase):
@@ -1174,10 +1186,16 @@ class TheReferenceCannotPassAGuessOffAsAFact(unittest.TestCase):
         said = "\n".join(check_reference(copy.deepcopy(REF)))
         # Числа прибиты нарочно: догадка, тихо ставшая фактом, меняет их —
         # и именно этого мы здесь и ждём.
-        self.assertIn("справка, виза: 4 подтверждено, 3 нет, 0 от нас", said)
-        self.assertIn("справка, до вылета: 2 подтверждено, 0 нет, 1 от нас", said)
-        self.assertIn("6 подтверждено, 0 нет, 0 от нас", said)
-        self.assertIn("16 пунктов", said)
+        #
+        # Переписаны 24 августа вместе с самой справкой: её «лишнюю инфу
+        # убрать, только актуальная» ужало визу до 4 пунктов, растило «до
+        # вылета» и такс-фри и добавило четвёртый блок про деньги. 16 пунктов
+        # стало 24.
+        self.assertIn("справка, виза: 2 подтверждено, 2 нет, 0 от нас", said)
+        self.assertIn("справка, до вылета: 4 подтверждено, 1 нет, 1 от нас", said)
+        self.assertIn("5 подтверждено, 1 нет, 0 от нас", said)          # такс-фри
+        self.assertIn("справка, деньги: 6 подтверждено, 1 нет, 1 от нас", said)
+        self.assertIn("24 пунктов", said)
 
     def test_every_item_is_drawn_as_what_it_is(self):
         """Сверка экрана с данными: у каждого пункта свой вид, и он тот самый."""
@@ -1200,15 +1218,22 @@ class TheReferenceCannotPassAGuessOffAsAFact(unittest.TestCase):
         """
         unsure = [i for b in REF["blocks"] for i in b["items"]
                   if i.get("verified") is False]
-        self.assertEqual(len(unsure), 3, "непроверенных три — порядок, срок, пошлина")
+        # Пять с 24 августа, и они разъехались по всем четырём блокам: часы
+        # приёма и срок рассмотрения (виза), цена страховки, комиссия своего
+        # банка (деньги), места киосков такс-фри. Раньше все три сидели в визе.
+        self.assertEqual(len(unsure), 5, "непроверенных пять, и они не только про визу")
         drawn = re.findall(r'<li class="unsure">(.*?)</li>', self.html, re.S)
         self.assertEqual(len(drawn), len(unsure))
         for item in unsure:
             row = [x for x in drawn if item["text"] in x]
             self.assertEqual(len(row), 1, f'«{item["text"][:40]}…» нарисован один раз')
             self.assertIn("не подтверждено", row[0])
-            self.assertIn(item["how"], row[0],
+            # Без ведущей стрелки: её рисует страница, а не текст, — иначе на
+            # экране их две подряд. Сами слова обязаны доехать дословно.
+            self.assertIn(item["how"].lstrip("→ ").strip(), row[0],
                           f'сказано, что спросить: «{item["text"][:40]}…»')
+            self.assertNotIn("→ →", " ".join(row[0].split()),
+                             "стрелка нарисована один раз, а не текстом и стилем сразу")
 
     def test_our_own_thinking_is_never_dressed_as_a_rule(self):
         mine = [i for b in REF["blocks"] for i in b["items"] if i.get("mine") is True]
@@ -1294,16 +1319,37 @@ class TheReferenceCannotPassAGuessOffAsAFact(unittest.TestCase):
                          self.html, re.S).group(1)
         self.assertIn(tax["title"], head)
         self.assertIn("возвращаешь в аэропорту", head)
-        # Подпись — сжатие пункта, а не отдельное утверждение. Разойтись они
-        # успеют молча: правила меняются, а строка в коде остаётся.
+        # Подпись — сжатие того, что блок говорит сам, а не отдельное
+        # утверждение. Разойтись они успеют молча: правила меняются, а строка в
+        # коде остаётся. Сверяется с `lead` блока: 24 августа пункты переписаны
+        # («лишнюю инфу убрать»), и прежние две фразы из них ушли, а сам
+        # переворот остался ровно там, где ему и место, — во вводной строке.
+        self.assertIn("возвращаешь в аэропорту", tax["lead"])
+        self.assertIn("Платишь налог в магазине", tax["lead"])
         items = " ".join(i["text"] for i in tax["items"])
-        self.assertIn("возврат получаешь при вылете", items)
-        self.assertIn("Теперь платишь полную цену с налогом", items)
+        self.assertIn("В магазине:", items)
+        self.assertIn("В аэропорту", items)
 
-    def test_the_only_link_is_one_we_opened(self):
+    def test_every_link_is_one_we_opened(self):
+        """Ссылка ставится только та, что открыта своими руками.
+
+        Список прибит целиком, а не проверяется на «похоже на ссылку»: смысл
+        правила в том, что новый адрес не может появиться тихо. 24 августа их
+        стало пять — три страховые (её «дай ссылки на страховые») и посольство
+        («сайт всё равно дай»), к прежнему Visit Japan Web.
+        """
         links = re.findall(r'<a class="btn" href="([^"]+)"', self.html)
-        self.assertEqual(links, ["https://services.digital.go.jp/en/visit-japan-web/"])
+        self.assertEqual(links, [
+            "https://www.ge.emb-japan.go.jp/itpr_en/visa.html",
+            "https://www.gpih.ge/ინდივიდუალური/სამოგზაურო-დაზღვევა/",
+            "https://tbcinsurance.ge/ge/personal/travel/travel-insurance",
+            "https://aldagi.ge/individual/travel-insurance",
+            "https://services.digital.go.jp/en/visit-japan-web/",
+            "https://www.sevenbank.co.jp/intlcard/index2.html",
+        ])
         self.assertIn('rel="noreferrer noopener"', self.html)
+        self.assertEqual(self.html.count('rel="noreferrer noopener"'), len(links),
+                         "каждая ссылка открывается отдельно и без доступа к странице")
 
     def test_the_check_date_stands_in_the_footer(self):
         """Отдельной строкой под справкой она стоила 37 точек высоты.
