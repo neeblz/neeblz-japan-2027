@@ -340,17 +340,28 @@ class PageShowsIt(unittest.TestCase):
         self.assertIn("2027-01-11T23:59", self.html)
         self.assertIn("2 брони по", self.html)
 
-    def test_wishlist_places_are_marked_as_wishes(self):
-        """Места из вишлиста — желания, а не брони, и это должно быть видно."""
+    def test_the_wish_block_left_the_city_cards(self):
+        """«Хочу сходить» из карточек городов ушло — Ни 2026-08-24.
+
+        Раньше этот тест проверял обратное: что подпись «хочу сходить · желания,
+        не бронь» стоит у каждого города и что места из файла показаны под ней.
+        Её слово дословно: «из карточек города Хочу сходить уходят».
+
+        Проверка не удалена, а перевёрнута: блок, убранный по её просьбе,
+        обязан краснеть, если вернётся сам. Названия мест при этом на странице
+        остаются — они переехали в дни, — и здесь же сторожится, что ушёл
+        именно блок, а не данные вместе с ним.
+        """
+        # Смотрим на сами карточки, а не на всю страницу: слова «хочу сходить»
+        # остались в комментариях сборки — там, где рассказано, почему блока
+        # больше нет, — и комментарии уезжают в `<style>` и `<script>` как есть.
+        cards = re.search(r'<section class="cities">(.*?)</section>', self.html, re.S).group(1)
+        for gone in ("хочу сходить", "не бронь", "wishes", "wish-cap", "wish-more",
+                     'data-add="place"'):
+            self.assertNotIn(gone, cards, f"«{gone}» вернулось в карточки городов")
         for place in REAL["places"]:
-            self.assertIn(place["title"], self.html)
-        self.assertIn("не бронь", self.html)
-        self.assertEqual(self.html.count("хочу сходить"), len(REAL["stays"]) - 1,
-                         "подпись стоит у каждого города, включая пустой")
-        # и ни одно из них не попало в деньги
-        wishes = re.search(r'class="wishes"(.*?)</div>', self.html, re.S)
-        self.assertIsNotNone(wishes)
-        self.assertNotIn("¥", wishes.group(1))
+            self.assertIn(place["title"], self.html,
+                          f'{place["title"]}: место пропало со страницы целиком')
 
     def test_a_place_hung_on_a_missing_booking_is_caught(self):
         """Опечатка в «stay» — это место, которое молча не покажется."""
@@ -448,25 +459,39 @@ class SheWritesHereHerself(unittest.TestCase):
         )
 
     def test_the_built_page_carries_no_entries_of_hers(self):
+        """Мешки уезжают пустыми, а содержимое приходит из хранилища.
+
+        Мешков по городам (`data-mine="omo3"`) больше нет: блок «хочу сходить»
+        ушёл из карточек 24 августа, и все её места лежат теперь одной стопкой
+        в «куплено отдельно», рядом с бронями. Мешок под них обязан быть — без
+        него запись вида `place` считалась бы в чеке и не показывалась нигде.
+        """
         self.assertNotIn("entries", self.island,
                          "её записи в сборке — это записи, которые пропадут при пересборке")
-        mounts = re.findall(r'<ul class="mine" data-mine="([^"]+)"></ul>', self.html)
-        self.assertEqual(len(mounts), 4, "мешок под её места — у каждого города")
+        self.assertEqual(re.findall(r'data-mine="([^"]+)"', self.html), [],
+                         "мешков по городам больше нет — «хочу сходить» ушло из карточек")
         self.assertIn('<ul class="mine rows-list" data-mine-booking></ul>', self.html)
+        self.assertIn('<ul class="mine rows-list" data-mine-place></ul>', self.html)
 
-    def test_every_city_she_can_choose_has_somewhere_to_show_it(self):
-        """Принятая ручкой запись обязана иметь, куда показаться.
+    def test_every_city_she_can_choose_has_a_name_on_the_page(self):
+        """Принятая ручкой запись обязана иметь, чем назваться.
 
-        Список городов в `_stays.js` — тот же, что мешки на странице. Разойтись
-        им нельзя: место, привязанное к городу без мешка, страница примет и
-        тихо не покажет — ровно та беда, от которой стоит правило №6 в check().
+        Сверялось раньше с мешками `data-mine` по городам; мешков не стало
+        вместе с блоком «хочу сходить», и место теперь пропасть не может — оно
+        лежит в общей стопке. Осталось второе: строка места пишет имя города,
+        беря его из `#japan-data` по `stay`. Разойдись этот список с тем, что
+        принимает ручка, — и её запись назовётся «город не найден».
+
+        Третий список — города в форме: правка старого места обязана
+        предлагать ровно то, что ручка потом примет.
         """
         source = (Path(__file__).resolve().parent.parent
                   / "site" / "functions" / "api" / "_stays.js").read_text(encoding="utf-8")
         allowed = json.loads(re.search(r"STAYS = (\[.*?\]);", source, re.S).group(1))
-        mounts = re.findall(r'data-mine="([^"]+)"', self.html)
+        named = [c["id"] for c in self.island["cities"]]
         offered = re.findall(r'<option value="([^"]+)">[^<]*·', self.html)
-        self.assertEqual(sorted(allowed), sorted(mounts))
+        self.assertEqual(sorted(allowed), sorted(named),
+                         "город записи не по чему назвать на странице")
         self.assertEqual(sorted(allowed), sorted(offered), "в форме предлагаются те же города")
 
     def test_the_money_code_on_the_page_is_the_tested_file(self):
@@ -500,9 +525,21 @@ class SheWritesHereHerself(unittest.TestCase):
         self.assertEqual(self.island["fx"]["human"], "23 августа 2026",
                          "курс подписан человеческой датой, а не ГГГГ-ММ-ДД")
 
-    def test_three_kinds_and_a_price_that_may_be_empty(self):
-        for kind in ("place", "booking", "todo"):
+    def test_two_buttons_but_the_form_still_knows_three_kinds(self):
+        """Кнопок две, видов записи по-прежнему три.
+
+        «+ место» ушла 24 августа: Ни убрала «хочу сходить» из карточек и
+        сказала, что места будет вписывать в днях. Форма при этом умеет `place`
+        и дальше — старая запись открывается на правку из своей же строки, и
+        поле «город» ей для этого нужно. Убрать поле вместе с кнопкой значило
+        бы, что правка отправит место без города и ручка его отвергнет.
+        """
+        for kind in ("booking", "todo"):
             self.assertIn(f'data-add="{kind}"', self.html, kind)
+        self.assertNotIn('data-add="place"', self.html,
+                         "новое место со страницы больше не заводится")
+        self.assertIn('data-only="place"', self.html,
+                      "поле «город» нужно правке старого места")
         self.assertIn("можно пусто", self.html, "цена необязательна, и это сказано в форме")
         for state in ("уже оплачено", "предстоит", "плачу на месте"):
             self.assertIn(state, self.html, state)
@@ -1169,9 +1206,13 @@ class TheDaysAreHers(unittest.TestCase):
         known = {p["title"]: p["site"] for p in REAL["places"]}
         for title, site in known.items():
             self.assertIn(site, self.days, f"{title}: ссылка из `places` не доехала")
+        # Было три: карточка города и два дня. Карточка потеряла блок «хочу
+        # сходить» 24 августа — осталось два дня. Число прибито нарочно: адрес
+        # обязан жить в `places` и оттуда размножаться, а не быть переписанным
+        # вторым экземпляром.
         self.assertEqual(
-            self.html.count('href="' + known["KUMONOCHA"] + '"'), 3,
-            "KUMONOCHA — в карточке города и в двух днях, но адрес один",
+            self.html.count('href="' + known["KUMONOCHA"] + '"'), 2,
+            "KUMONOCHA — в двух днях, но адрес один",
         )
 
     def test_a_transfer_day_carries_no_second_price(self):

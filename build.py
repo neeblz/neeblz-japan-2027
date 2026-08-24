@@ -273,7 +273,15 @@ def check(trip: dict, plan: list | None = None) -> list[str]:
                 f'{soonest["name"]}, {yen(soonest["total_jpy"])}')
 
     # 6. Место из вишлиста висит на брони. Опечатка в «stay» — это место,
-    #    которое молча не покажется: страница соберётся, а его на ней не будет.
+    #    привязанное к городу, которого в поездке нет.
+    #
+    #    24 августа правило перестало сторожить показ: блок «хочу сходить» ушёл
+    #    из карточек городов, и `places` рисуется теперь только в днях, по имени.
+    #    `stay` осталось единственной строчкой, связывающей место с городом, и
+    #    её никто не читает — а значит сломаться она может молча и лежать
+    #    сломанной до того дня, когда её снова начнут читать. Правило стоит
+    #    ровно за этим и стоит дёшево; тихой пропажей на странице заведует
+    #    теперь `placeLine`, который пишет «город не найден» прямо в строке.
     known = {s["id"] for s in stays}
     for p in trip.get("places", []):
         if p["stay"] not in known:
@@ -1066,55 +1074,12 @@ def flights_block(trip: dict) -> str:
 </section>"""
 
 
-def places_block(leg: dict, places: list) -> str:
-    """Куда она хочет сходить в этом городе.
-
-    Два источника, один список. Записанное в `trip.json` приезжает сюда при
-    сборке; то, что Ни вписала сама прямо на странице, приезжает из хранилища
-    уже в браузере и ложится в `ul.mine` — поэтому мешок под её места стоит
-    здесь всегда, даже когда он пуст.
-
-    Разница между ними одна и она честная: у её записи может быть цена, и
-    тогда эта цена идёт в общий чек. Места из файла цены не имеют вовсе —
-    это желания, за которые ещё никто не платил.
-
-    Список будет расти: первые четыре из файла видны всегда, остальные под
-    строкой, чтобы десятое место не растянуло карточку на второй экран.
-    """
-    mine = [p for p in places if p["stay"] in {s["id"] for s in leg["stays"]}]
-    home = leg["stays"][0]["id"]
-    head = '<p class="wish-cap">хочу сходить <span>· желания, не бронь</span></p>'
-    add = (f'<button type="button" class="tiny" data-add="place" data-stay="{e(home)}">'
-           f'+ место</button>')
-    # Пустой мешок и подпись «пусто» — разные вещи: подпись прячется, как
-    # только в мешок что-то легло, а сам мешок остаётся на месте всегда.
-    tail = (f'<ul class="mine" data-mine="{e(home)}"></ul>'
-            f'<p class="none" data-none{" hidden" if mine else ""}>пока пусто — нажми '
-            f'«+ место», чтобы записать сюда своё</p>{add}')
-
-    def one(p):
-        where = f'<span class="where">{e(p["where"])}</span>' if p.get("where") else ""
-        # Название становится ссылкой, когда сайт места проверен открытием.
-        # 24 августа Ни попросила ссылки: при планировании открывают именно их,
-        # а адрес с телефоном нужны уже на месте. Ссылки нет — остаётся текст,
-        # выдуманного адреса тут не появится.
-        title = (f'<a href="{e(p["site"])}" target="_blank" rel="noreferrer noopener">'
-                 f'{e(p["title"])}</a>') if p.get("site") else e(p["title"])
-        return (f'<li><b>{title}</b>{where}'
-                f'<span class="what">{e(p["what"])}</span></li>')
-
-    if not mine:
-        return f'<div class="wishes empty" data-city="{e(home)}">{head}{tail}</div>'
-
-    shown = "".join(one(p) for p in mine[:4])
-    rest = mine[4:]
-    more = ""
-    if rest:
-        more = (f'<details class="wish-more"><summary>ещё {len(rest)} '
-                f'{plural(len(rest), "место", "места", "мест")}</summary>'
-                f'<ul>{"".join(one(p) for p in rest)}</ul></details>')
-    return (f'<div class="wishes" data-city="{e(home)}">{head}<ul>{shown}</ul>'
-            f'{more}{tail}</div>')
+# Блока «хочу сходить» в карточке города больше нет — Ни 2026-08-24: «из
+# карточек города Хочу сходить уходят». Места из `trip.json` при этом никуда не
+# делись: они переехали в дни и стоят там ссылками (`spots[].place`, `place` у
+# пунктов), а `places` остался единственным местом, где живёт проверенный адрес.
+# Поэтому раздел данных не тронут, а вместе с блоком ушла и возможность
+# вписывать место со страницы: вписывать она будет в днях.
 
 
 def stay_fine(leg: dict, extras: str, notes: str) -> str:
@@ -1151,7 +1116,7 @@ def stay_fine(leg: dict, extras: str, notes: str) -> str:
 </details>"""
 
 
-def city_cards(all_legs: list, alerts: list, places: list, cancelled: list) -> str:
+def city_cards(all_legs: list, alerts: list, cancelled: list) -> str:
     """Карточка на город: всё, что превращается в деньги и в опоздания."""
     flagged = {a["id"]: a["level"] for a in alerts}
     cards = []
@@ -1212,7 +1177,6 @@ def city_cards(all_legs: list, alerts: list, places: list, cancelled: list) -> s
 
     {"".join(brons)}
     {stay_fine(leg, extras, notes)}
-    {places_block(leg, places)}
   </div>
 </article>""")
 
@@ -1228,16 +1192,23 @@ def city_cards(all_legs: list, alerts: list, places: list, cancelled: list) -> s
 
 
 def adder(trip: dict, all_legs: list) -> str:
-    """Три кнопки и одна форма — всё, чем Ни правит эту страницу.
+    """Две кнопки и одна форма — всё, чем Ни правит эту страницу.
 
-    Одна форма на три вида записи, а не три формы: поля у них общие на
-    четыре пятых (что это, подробность, цена, как с деньгами), и три почти
+    Одна форма на два вида записи, а не две формы: поля у них общие на
+    четыре пятых (что это, подробность, цена, как с деньгами), и два почти
     одинаковых бланка рядом — это выбор, который приходится делать глазами
     каждый раз.
 
     Форма стоит здесь, между городами и деньгами, потому что отсюда видно
-    оба берега: место уедет наверх в карточку города, бронь и пункт списка —
-    вниз, в свои разделы, и чек под ней сойдётся на глазах.
+    оба берега: бронь и пункт списка уедут вниз, в свои разделы, и чек под
+    ней сойдётся на глазах.
+
+    **Кнопки «+ место» здесь больше нет** — Ни 2026-08-24 убрала «хочу
+    сходить» из карточек городов и сказала, что места будет вписывать в днях.
+    Форма при этом умеет `place` по-прежнему: старая запись открывается на
+    правку отсюда же, и город у неё выбирается тем же списком. Убрать поле
+    вместе с кнопкой значило бы, что правка старого места отправит запись без
+    города и ручка её отвергнет.
     """
     cities = "".join(
         f'<option value="{e(leg["stays"][0]["id"])}">{e(leg["city"])} · {e(leg["area"])}'
@@ -1252,7 +1223,6 @@ def adder(trip: dict, all_legs: list) -> str:
 <section class="adder">
   <div class="knobs">
     <p class="cap">вносить своё</p>
-    <button type="button" class="knob" data-add="place">+ место</button>
     <button type="button" class="knob" data-add="booking">+ бронь или билет</button>
     <button type="button" class="knob" data-add="todo">+ в то-до</button>
     <span class="storesays" data-store-says role="status"></span>
@@ -1304,13 +1274,6 @@ def adder(trip: dict, all_legs: list) -> str:
       <span class="says" data-form-says role="status"></span>
     </div>
   </form>
-  <!-- Место, привязанное к городу, которого на странице больше нет (город
-       переименовали в trip.json, а запись осталась). Тихо пропасть оно не
-       должно — это ровно та беда, от которой в check() стоит правило №6. -->
-  <div class="orphans" data-orphans hidden>
-    <p class="cap">эти места привязаны к городу, которого на странице нет</p>
-    <ul class="mine" data-mine-orphan></ul>
-  </div>
 </section>"""
 
 
@@ -1744,7 +1707,7 @@ def luggage(trip: dict) -> str:
             f'<span>{e(svc["size"])}</span></p>') if lug.get("cost") else ""
     return f"""
 <div id="luggage">
-  <p class="lead">{e(lug["lead"])}</p>
+  {f'<p class="lead">{e(lug["lead"])}</p>' if lug.get("lead") else ""}
   <div class="who">
     <p class="name">{e(svc["name"])}<i aria-hidden="true">·</i>{e(svc["product"])}</p>
     <p class="order">{e(svc["order"])}</p>
@@ -1758,7 +1721,7 @@ def luggage(trip: dict) -> str:
 
 
 def bought() -> str:
-    """Купленное отдельно: билеты, поезда, экскурсии.
+    """Купленное отдельно: билеты, поезда, экскурсии. И её места — здесь же.
 
     Пустой раздел — одна строка, а не пустая страница: место под её брони
     существует до первой брони, иначе кнопке «+ бронь» некуда класть.
@@ -1766,6 +1729,17 @@ def bought() -> str:
     Заголовок несёт число и сумму (их подставляет браузер), потому что
     свёрнутое без подписи превращается в вопрос «а есть ли там что-нибудь»,
     который приходится решать нажатием.
+
+    **Мешок под её места стоит здесь с 24 августа.** Раньше он стоял в
+    карточке города, а карточки лишились блока «хочу сходить» — и запись вида
+    `place` осталась бы без единого места на странице, продолжая при этом
+    считаться в чеке. Запись, которая берёт деньги и не показывается, хуже
+    лишнего блока: сумма растёт, а спросить с неё нечего.
+
+    Мешок пустой и спрятанный: показывает его браузер и только когда такая
+    запись правда есть. Заводить видимую подпись под то, чего у неё нет
+    (новых мест отсюда больше не добавить), значило бы поставить на страницу
+    пустую карточку-призрак.
     """
     return """
 <div id="bought">
@@ -1773,6 +1747,12 @@ def bought() -> str:
      поезда, экскурсии. Идёт в общий чек — «уже оплачено» или «предстоит».</p>
   <ul class="mine rows-list" data-mine-booking></ul>
   <p class="none" data-none-booking>пока пусто — нажми «+ бронь или билет» выше.</p>
+  <div class="kept-places" data-places hidden>
+    <p class="cap">места, записанные раньше</p>
+    <ul class="mine rows-list" data-mine-place></ul>
+    <p class="sec-note">Новые места теперь вписываются в днях. Эти можно
+       поправить или убрать — они по-прежнему в общем чеке.</p>
+  </div>
 </div>"""
 
 
@@ -2448,23 +2428,9 @@ code{font-size:.88em; background:var(--mist); padding:1px 5px; border-radius:4px
 .fine li{padding:2px 0 2px 11px; position:relative; line-height:1.4}
 .fine li::before{content:"·"; position:absolute; left:3px}
 
-/* ── места из вишлиста: пунктир, потому что это желания, а не брони */
-.wishes{margin-top:13px; border-top:1px dashed var(--rule); padding-top:10px}
-.wish-cap{margin:0 0 7px; font-size:9.5px; letter-spacing:.14em; text-transform:uppercase;
-  color:var(--calm); font-weight:700}
-.wish-cap span{color:var(--quiet); font-weight:400; letter-spacing:.04em; text-transform:none;
-  font-size:10px}
-.wishes ul{list-style:none; margin:0; padding:0}
-.wishes li{padding:4px 0 4px 14px; position:relative; line-height:1.3}
-.wishes li::before{content:"◇"; position:absolute; left:0; top:4px; font-size:8.5px;
-  color:var(--calm)}
-.wishes b{font-size:12px; font-weight:600}
-.wishes .where{font-size:10px; color:var(--quiet); margin-left:5px}
-.wishes .what{display:block; font-size:11px; color:var(--quiet); line-height:1.35}
-.wishes .none{margin:0; font-size:11px; color:var(--quiet); line-height:1.35;
-  border:1px dashed var(--rule); border-radius:5px; padding:6px 8px}
-.wish-more{margin-top:4px}
-.wish-more summary{cursor:pointer; font-size:11px; color:var(--deep)}
+/* Стилей блока «хочу сходить» (`.wishes`, `.wish-cap`, `.wish-more`) здесь
+   больше нет: сам блок ушёл из карточек городов 24 августа. Её записи-места
+   переехали в «куплено отдельно» и рисуются общим `.own`, как брони. */
 .cancelled{list-style:none; margin:12px 0 0; padding:0; font-size:11.5px; color:var(--quiet)}
 .cancelled li{display:flex; flex-wrap:wrap; gap:0 8px; align-items:baseline}
 .cancelled b{text-decoration:line-through; font-weight:600}
@@ -2547,12 +2513,11 @@ code{font-size:.88em; background:var(--mist); padding:1px 5px; border-radius:4px
 .knobs{display:flex; flex-wrap:wrap; align-items:center; gap:8px 10px}
 .knobs .cap{margin:0 4px 0 0; font-size:9.5px; letter-spacing:.17em;
   text-transform:uppercase; color:var(--quiet)}
-.knob,.tiny{font-family:inherit; cursor:pointer; color:var(--ink); background:var(--card);
+.knob{font-family:inherit; cursor:pointer; color:var(--ink); background:var(--card);
   border:1px solid var(--rule); border-radius:99px; padding:7px 13px; font-size:12.5px}
-.knob:hover,.tiny:hover{background:var(--mist)}
-.knob:focus-visible,.tiny:focus-visible,.save:focus-visible,.drop:focus-visible{
+.knob:hover{background:var(--mist)}
+.knob:focus-visible,.save:focus-visible,.drop:focus-visible{
   outline:2px solid var(--calm); outline-offset:2px}
-.tiny{margin-top:7px; padding:5px 11px; font-size:11.5px; color:var(--deep)}
 .storesays{font-size:11.5px; color:var(--hot)}
 .pane{margin-top:12px; padding:13px 15px 14px; background:var(--card);
   border:1px solid var(--hair); border-radius:10px;
@@ -2575,11 +2540,16 @@ code{font-size:.88em; background:var(--mist); padding:1px 5px; border-radius:4px
 .drop{background:none; color:var(--deep); border-color:var(--rule)}
 .save[disabled]{opacity:1; background:var(--quiet); border-color:var(--quiet); cursor:default}
 .pane .says{font-size:12px; color:var(--hot)}
-.orphans{margin-top:12px; border:1px dashed var(--hot); border-radius:8px; padding:8px 11px}
-.orphans .cap{margin:0 0 4px; font-size:10px; letter-spacing:.1em; text-transform:uppercase;
-  color:var(--hot)}
+/* Её места — под бронями, за своей чертой: цену они дают в тот же чек, но
+   куплено это ещё не значит. */
+.kept-places{margin-top:12px; border-top:1px dashed var(--rule); padding-top:9px}
+.kept-places .cap{margin:0 0 4px; font-size:10px; letter-spacing:.1em; text-transform:uppercase;
+  color:var(--calm)}
+.kept-places .sec-note{margin-top:6px}
+.own .town{font-size:10.5px; color:var(--quiet); margin-left:6px}
+.own .town.lost{color:var(--hot)}
 
-/* Строка её записи — в карточке города, в «куплено» и в списке. */
+/* Строка её записи — в «куплено» и в списке. */
 .own{position:relative; padding:6px 0 7px 14px; line-height:1.35;
   border-bottom:1px solid var(--hair)}
 .own::before{content:"◆"; position:absolute; left:0; top:7px; font-size:8.5px; color:var(--calm-ink)}
@@ -2609,7 +2579,7 @@ code{font-size:.88em; background:var(--mist); padding:1px 5px; border-radius:4px
 .todo-group .own{padding-left:0}
 .todo-group .own::before{display:none}
 .todo-group .own .tab,.todo-group .own .tools{margin-left:31px}
-#bought .none,.wishes .none[hidden]{display:none}
+#bought .none{display:none}
 #bought .none:not([hidden]){display:block; margin:0; font-size:12px; color:var(--quiet)}
 
 /* Из чего сложился чек — под самим чеком, чтобы столбик можно было сверить
@@ -3079,8 +3049,8 @@ a.mk.bk{border-color:var(--hot)}
   .deadlines .cap{text-align:left}
   .deadlines .rest{justify-items:start}
   .deadlines .rest li{justify-content:flex-start}
-  .btn,.wish-more summary{min-height:36px; display:flex; align-items:center}
-  .knob,.tiny,.ed,.rm,.save,.drop{min-height:36px; display:inline-flex; align-items:center}
+  .btn{min-height:36px; display:flex; align-items:center}
+  .knob,.ed,.rm,.save,.drop{min-height:36px; display:inline-flex; align-items:center}
   .pane{grid-template-columns:1fr}
   .pane .f.wide{grid-column:span 1}
   .stayfine > summary{min-height:44px; align-content:center}
@@ -3361,10 +3331,21 @@ APP_JS = """
     return wrap;
   }
 
+  /* Место рисуется с именем города рядом. Раньше город был очевиден — строка
+     лежала в его карточке; теперь все места лежат одной стопкой, и без имени
+     запись не отвечает на вопрос «где это». Города, которого на странице нет,
+     строка не скрывает, а называет вслух: молчаливая пропажа — ровно та беда,
+     от которой в check() стоит правило №6. */
   function placeLine(entry){
     var li = el("li", "own");
     li.setAttribute("data-id", entry.id);
-    li.appendChild(el("b", null, entry.title));
+    var head = el("span", "head");
+    head.appendChild(el("b", null, entry.title));
+    var town = null;
+    (data.cities || []).forEach(function(x){ if (x.id === entry.stay) town = x.city; });
+    head.appendChild(town ? el("span", "town", town)
+                          : el("span", "town lost", "город не найден"));
+    li.appendChild(head);
     if (entry.note) li.appendChild(el("span", "what", entry.note));
     li.appendChild(priceTag(entry));
     li.appendChild(tools(entry));
@@ -3415,14 +3396,6 @@ APP_JS = """
   function empty(node){ while (node && node.firstChild) node.removeChild(node.firstChild); }
 
   function paintEntries(){
-    var known = {};
-    Array.prototype.forEach.call(document.querySelectorAll("[data-mine]"), function(node){
-      empty(node);
-      var name = node.getAttribute("data-mine");
-      if (name) known[name] = node;
-    });
-
-    var orphans = [];
     var byGroup = {};
     Array.prototype.forEach.call(document.querySelectorAll("[data-mine-todo]"), function(node){
       empty(node);
@@ -3430,12 +3403,16 @@ APP_JS = """
     });
     var boughtList = document.querySelector("[data-mine-booking]");
     empty(boughtList);
+    /* Один мешок на все её места. Мешков по городам больше нет — «хочу
+       сходить» ушло из карточек, — и раскладывать места по городам стало не
+       по чему. Зато и потеряться им негде: город, которого нет, теперь не
+       прячет строку, а пишется на ней (см. placeLine). */
+    var placeList = document.querySelector("[data-mine-place]");
+    empty(placeList);
 
     state.entries.forEach(function(entry){
       if (entry.kind === "place") {
-        var home = known[entry.stay];
-        if (home) home.appendChild(placeLine(entry));
-        else orphans.push(entry);
+        if (placeList) placeList.appendChild(placeLine(entry));
       } else if (entry.kind === "booking") {
         if (boughtList) boughtList.appendChild(boughtLine(entry));
       } else {
@@ -3444,25 +3421,14 @@ APP_JS = """
       }
     });
 
-    /* Место, чей город исчез из trip.json, показывается отдельно, а не
-       пропадает: пропажу никто не заметит, а это её запись. */
-    var orphanBox = document.querySelector("[data-orphans]");
-    var orphanList = document.querySelector("[data-mine-orphan]");
-    if (orphanBox && orphanList) {
-      empty(orphanList);
-      orphans.forEach(function(entry){ orphanList.appendChild(placeLine(entry)); });
-      orphanBox.hidden = orphans.length === 0;
-    }
+    /* Подпись «места, записанные раньше» появляется вместе с первым местом:
+       новых отсюда не добавить, и пустая рамка была бы карточкой-призраком. */
+    var placeBox = document.querySelector("[data-places]");
+    if (placeBox) placeBox.hidden = !(placeList && placeList.firstChild);
 
     var spare = document.querySelector("[data-spare]");
     if (spare) spare.hidden = !spare.querySelector("li");
 
-    Array.prototype.forEach.call(document.querySelectorAll("[data-none]"), function(node){
-      var card = node.closest(".wishes");
-      var mine = card ? card.querySelector("[data-mine]") : null;
-      var built = card ? card.querySelector("ul:not(.mine) li") : null;
-      node.hidden = !!built || !!(mine && mine.firstChild);
-    });
     var noneBought = document.querySelector("[data-none-booking]");
     if (noneBought) noneBought.hidden = !!(boughtList && boughtList.firstChild);
   }
@@ -3487,9 +3453,16 @@ APP_JS = """
     var todoTag = document.querySelector('[data-tag="todo"]');
     if (todoTag) todoTag.textContent = left ? left + " не сделано" : "всё отмечено";
 
+    /* Подписи у «куплено отдельно» сейчас нет вовсе — из четырёх свёрток её
+       носит только «Багаж», — и этот кусок работает вхолостую. Он всё же
+       считает и брони, и её места: вернётся подпись — она обязана называть
+       всё, что лежит внутри. Написать «пусто» над разделом, где лежит место с
+       ценой, значило бы уверять, что открывать нечего, пока цена идёт в чек. */
     var boughtTag = document.querySelector('[data-tag="bought"]');
     if (boughtTag) {
-      var mine = state.entries.filter(function(x){ return x.kind === "booking"; });
+      var mine = state.entries.filter(function(x){
+        return x.kind === "booking" || x.kind === "place";
+      });
       var sum = mine.reduce(function(acc, x){ return acc + JapanMoney.yenOf(x, data.fx); }, 0);
       boughtTag.textContent = mine.length ? mine.length + " · " + yen(sum) : "пусто";
     }
@@ -3618,13 +3591,13 @@ APP_JS = """
     if (form) { form.hidden = true; form.reset(); }
   }
 
+  /* Кнопок теперь две — «бронь или билет» и «в то-до». Место отсюда больше не
+     заводится: Ни 2026-08-24 убрала «хочу сходить» из карточек и вписывает
+     места в днях. `openForm("place", …)` при этом жив и зовётся правкой из
+     самой строки — старая запись обязана открываться. */
   Array.prototype.forEach.call(document.querySelectorAll("[data-add]"), function(button){
     button.addEventListener("click", function(){
-      var kind = button.getAttribute("data-add");
-      openForm(kind, null);
-      if (kind === "place" && button.getAttribute("data-stay") && field("stay")) {
-        field("stay").value = button.getAttribute("data-stay");
-      }
+      openForm(button.getAttribute("data-add"), null);
       form.scrollIntoView({ block: "center", behavior: "smooth" });
     });
   });
@@ -3655,8 +3628,11 @@ APP_JS = """
     sending.then(function(said){
       adopt(said);
       closeForm();
-      var fold = document.querySelector('[data-fold="' + (kind === "booking" ? "bought" : "todo") + '"]');
-      if (kind !== "place" && fold) fold.open = true;
+      /* Правленое место лежит в «куплено отдельно» рядом с бронями — туда же
+         и раскрываем, иначе подсветка сработает внутри закрытой свёртки и
+         сохранённое будет выглядеть пропавшим. */
+      var fold = document.querySelector('[data-fold="' + (kind === "todo" ? "todo" : "bought") + '"]');
+      if (fold) fold.open = true;
       var fresh = document.querySelector('[data-id="' + (was || freshest(said, kind)) + '"]');
       if (fresh) {
         fresh.classList.add("fresh");
@@ -4329,7 +4305,6 @@ def render(trip: dict, plan: list | None = None) -> str:
     plan = load_plan() if plan is None else plan
     stays = sorted(trip["stays"], key=lambda s: (s["checkin"]["date"], s["checkout"]["date"]))
     alerts = trip.get("alerts", [])
-    places = trip.get("places", [])
     all_legs = legs(stays)
     t = trip["trip"]
     nights = (d(t["end"]) - d(t["start"])).days
@@ -4350,7 +4325,7 @@ def render(trip: dict, plan: list | None = None) -> str:
   {thread(trip, all_legs)}
   {flights_block(trip)}
   {alert_block(alerts)}
-  {city_cards(all_legs, alerts, places, trip.get("cancelled", []))}
+  {city_cards(all_legs, alerts, trip.get("cancelled", []))}
   {adder(trip, all_legs)}
   {ledger(trip, stays, all_legs)}
   {more_block(trip, stays, alerts, plan, all_legs)}
@@ -4391,19 +4366,25 @@ def write_stays(all_legs: list) -> list[str]:
     сборкой — как `_cards.js` у вишлиста — и лежит в git видимым куском, а не
     угадывается в рантайме.
 
-    Здесь ровно те же ключи, что и у мешков `data-mine` на странице: город
-    сливает соседние брони в один отрезок, и место цепляется к первой из них.
-    Совпадение этих двух списков — не совпадение, а условие: принятая запись
-    обязана иметь, куда показаться.
+    Здесь ровно те же ключи, что у городов в `#japan-data` и в списке городов
+    формы: город сливает соседние брони в один отрезок, и место цепляется к
+    первой из них. Совпадение этих трёх списков — не совпадение, а условие:
+    принятая запись обязана иметь, чем назваться, а её правка — что выбрать.
+
+    Мешков `data-mine` по городам, с которыми список сверялся раньше, больше
+    нет: «хочу сходить» ушло из карточек 24 августа, и все места лежат одной
+    стопкой в «куплено отдельно». Пропасть из-за незнакомого города запись
+    теперь не может — строка назовёт его «город не найден», — но принимать в
+    хранилище город, которого в поездке нет, по-прежнему незачем.
     """
     ids = [leg["stays"][0]["id"] for leg in all_legs]
     body = json.dumps(ids, ensure_ascii=False)
     (SITE / "functions" / "api" / "_stays.js").write_text(
         "/* Собирается `build.py` — руками не править.\n"
         "\n"
-        "   Города, к которым можно привязать место. Список тот же, что у мешков\n"
-        "   `data-mine` на собранной странице: запись, принятая ручкой, обязана\n"
-        "   иметь, куда показаться. */\n"
+        "   Города, к которым можно привязать место. Список тот же, что у городов\n"
+        "   в `#japan-data` и в списке городов формы: запись, принятая ручкой,\n"
+        "   обязана иметь, чем назваться на странице. */\n"
         f"\nexport const STAYS = {body};\n",
         encoding="utf-8",
     )
