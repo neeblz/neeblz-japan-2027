@@ -374,14 +374,27 @@ class PageShowsIt(unittest.TestCase):
         self.assertIn("width=device-width", self.html)
         self.assertIn("@media (min-width:560px)", self.html.replace("\n", " "))
 
-    def test_page_asks_no_other_host_for_anything(self):
-        """В дороге связь плохая: внешних загрузок быть не должно."""
-        outside = re.findall(r'(?:src|href)="(https?://[^"]+)"', self.html)
-        for url in outside:
-            self.assertTrue(
-                url.startswith("https://www.google.com/maps/"),
-                f"страница тянет что-то со стороны: {url}",
-            )
+    def test_page_loads_nothing_from_another_host(self):
+        """В дороге связь плохая: внешних **загрузок** быть не должно.
+
+        24 августа правило пришлось развести на два, потому что оно смешивало
+        разные вещи. Загрузка (`src`, стили, шрифты) происходит **без спроса** и
+        ломает страницу в плохой связи — её нет и не будет. Ссылка (`href`)
+        ничего не грузит: по ней переходят пальцем, и Ни попросила их сама —
+        «ссылки» четвёртым пунктом, чтобы при планировании открывать сайт отеля
+        и места. Запрещать их значило бы запрещать то, ради чего она просила.
+        """
+        loads = re.findall(r'src="(https?://[^"]+)"', self.html)
+        loads += re.findall(r'<link[^>]+href="(https?://[^"]+)"', self.html)
+        self.assertEqual(loads, [], "страница тянет что-то со стороны")
+
+    def test_every_outside_link_is_a_link_and_opens_safely(self):
+        """Внешняя ссылка открывается новой вкладкой и без утечки перехода."""
+        for tag in re.findall(r'<a[^>]+href="https?://[^"]+"[^>]*>', self.html):
+            if 'href="https://www.google.com/maps/' in tag:
+                continue
+            self.assertIn('target="_blank"', tag, tag)
+            self.assertIn("noopener", tag, tag)
 
     def test_no_secret_shaped_thing_reached_the_page(self):
         for pattern in (r"[\w.+-]+@[\w-]+\.[\w.]+", r"(?i)\b(pin|пароль|номер брони)\b"):

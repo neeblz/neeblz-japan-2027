@@ -164,7 +164,9 @@
      "what": "сервисный сбор",
      "jpy": 4149
     }
-   ]
+   ],
+   "site": "https://www.discoverasr.com/en/lyf/japan/lyf-ginza-tokyo",
+   "site_note": "сайт сети Ascott; нашему серверу отвечает 403, у гостя открывается — как Four Seasons"
   },
   {
    "id": "omo5",
@@ -198,7 +200,9 @@
    },
    "extras": [
     "городской налог на проживание — сверху, точная сумма на месте"
-   ]
+   ],
+   "site": "https://hoshinoresorts.com/en/hotels/omo5kyotosanjo/",
+   "site_note": "открыт гостем, 200"
   },
   {
    "id": "morizuya-1",
@@ -233,7 +237,9 @@
    },
    "extras": [
     "налог на источники — ¥430"
-   ]
+   ],
+   "site": "https://www.morizuya.com/en/",
+   "site_note": "открыт гостем, 200: «Kinosaki Hot Spring Ryokan Morizuya», 417 Yushima"
   },
   {
    "id": "morizuya-2",
@@ -269,7 +275,9 @@
    "extras": [
     "налог на источники — ¥430"
    ],
-   "conflict": "overlap-14"
+   "conflict": "overlap-14",
+   "site": "https://www.morizuya.com/en/",
+   "site_note": "открыт гостем, 200: «Kinosaki Hot Spring Ryokan Morizuya», 417 Yushima"
   },
   {
    "id": "omo3",
@@ -310,7 +318,9 @@
    "notes": [
     "Багаж: примут накануне заезда и в день выезда. Держать несколько дней не могут.",
     "На стойке есть служба доставки. На бланке писать имя брони и дату заезда."
-   ]
+   ],
+   "site": "https://hoshinoresorts.com/en/hotels/omo3asakusa/",
+   "site_note": "открыт гостем, 200"
   }
  ],
  "cancelled": [],
@@ -331,25 +341,29 @@
    "stay": "lyf",
    "title": "HIIRAGI Ginza",
    "where": "Гиндза",
-   "what": "матча-бар на шесть мест, десерты готовят при тебе"
+   "what": "матча-бар на шесть мест, десерты готовят при тебе",
+   "site": "https://tabelog.com/en/tokyo/A1301/A130101/13300655/"
   },
   {
    "stay": "lyf",
    "title": "est · Four Seasons Otemachi",
    "where": "Отэмати",
-   "what": "французский на верхнем этаже, звезда Мишлен"
+   "what": "французский на верхнем этаже, звезда Мишлен",
+   "site": "https://www.fourseasons.com/otemachi/dining/restaurants/est/"
   },
   {
    "stay": "omo5",
    "title": "KUMONOCHA",
    "where": "Саннэндзака или Арасияма",
-   "what": "кафе облачных пирожных"
+   "what": "кафе облачных пирожных",
+   "site": "https://www.kumonocha.com/en"
   },
   {
    "stay": "omo3",
    "title": "AGE.3",
    "where": "Гиндза, Асакуса или Харадзюку",
-   "what": "лавка жареных сэндвичей, родоначальник формата"
+   "what": "лавка жареных сэндвичей, родоначальник формата",
+   "site": "https://fruits-sand-three.com/pages/age-3"
   }
  ],
  "_unknown": [

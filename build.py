@@ -348,6 +348,7 @@ def legs(stays: list) -> list:
         leg["checkout"] = last["checkout"]["time"]
         leg["address"] = first["address"]
         leg["phone"] = first["phone"]
+        leg["site"] = first.get("site")
     return out
 
 
@@ -652,7 +653,13 @@ def places_block(leg: dict, places: list) -> str:
 
     def one(p):
         where = f'<span class="where">{e(p["where"])}</span>' if p.get("where") else ""
-        return (f'<li><b>{e(p["title"])}</b>{where}'
+        # Название становится ссылкой, когда сайт места проверен открытием.
+        # 24 августа Ни попросила ссылки: при планировании открывают именно их,
+        # а адрес с телефоном нужны уже на месте. Ссылки нет — остаётся текст,
+        # выдуманного адреса тут не появится.
+        title = (f'<a href="{e(p["site"])}" target="_blank" rel="noreferrer noopener">'
+                 f'{e(p["title"])}</a>') if p.get("site") else e(p["title"])
+        return (f'<li><b>{title}</b>{where}'
                 f'<span class="what">{e(p["what"])}</span></li>')
 
     if not mine:
@@ -695,7 +702,8 @@ def stay_fine(leg: dict, extras: str, notes: str) -> str:
     <div><dt>выезд</dt><dd class="num">{e(leg["checkout"])}</dd></div>
     <div><dt>адрес</dt><dd>
       <a class="btn" href="{e(maplink(leg["address"]))}" target="_blank" rel="noreferrer noopener">{e(leg["address"])}</a>
-      <a class="btn tel" href="{e(tellink(leg["phone"]))}">{e(leg["phone"])}</a></dd></div>
+      <a class="btn tel" href="{e(tellink(leg["phone"]))}">{e(leg["phone"])}</a>
+      {f'<a class="btn site" href="{e(leg["site"])}" target="_blank" rel="noreferrer noopener">сайт отеля</a>' if leg.get("site") else ""}</dd></div>
   </dl>
   {f'<ul class="extras">{extras}</ul>' if extras else ''}
   {f'<ul class="fine">{notes}</ul>' if notes else ''}
