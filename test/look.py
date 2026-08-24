@@ -58,19 +58,20 @@ with sync_playwright() as pw:
         + (f' — торчит: {overflow["wide"]}' if overflow["wide"] else ""),
     )
 
-    # ── заметка про 14-е: видна, спокойная, ничего не требует
+    # ── заметка про 14-е: со страницы ушла
+    #
+    # Здесь до 24 августа проверялось обратное — что спокойный блок стоит в
+    # начале страницы. Ни сняла это сама: «блок **как задумано** убивай, он
+    # действует на нервы и мешается». Проверка перевёрнута, а не удалена:
+    # пропажа блока обязана остаться решением, а не случайностью следующей
+    # правки. Данные не тронуты — наложение по-прежнему помечено в `trip.json`,
+    # и убрать его молча не даёт сборка. То, что ночь 14-го оплачена и пуста,
+    # по-прежнему сказано в карточке OMO3 — это проверяется ниже.
     alert = page.locator("#overlap-14")
-    want(alert.count() == 1, "блок про ночь 14-го на странице один")
-    box = alert.bounding_box()
-    want(box is not None and box["y"] < 1400, f'он в начале страницы (y={box["y"]:.0f}px)')
-    colour = alert.evaluate("el => getComputedStyle(el).borderTopColor")
-    want("168, 131, 75" in colour, f"рамка песочная, не тревожная ({colour})")
-    said = alert.inner_text()
-    want("14 → 15 января" in said, "названа именно та ночь")
-    want("ночуешь в Киносаки" in said, "сказано, где она спит")
-    want("заезд 15-го" in said, "сказано, что в OMO3 она заезжает 15-го")
+    want(alert.count() == 0, f"блока «как задумано» на странице нет ({alert.count()})")
 
     body = page.inner_text("body").lower()
+    want("как задумано" not in body, "и слов «как задумано» на странице нет")
     want("нужно решение" not in body, "со страницы ушло «нужно решение»")
     want("требует решения" not in body, "со страницы ушло «требует решения»")
 
@@ -111,10 +112,19 @@ with sync_playwright() as pw:
     page.wait_for_timeout(150)
 
     # ── даты: поездка начинается 4-го
-    days = page.locator("#days > ol.days > li")
-    want(days.count() == 16, f"дней в списке {days.count()}")
-    want("4" == days.first.locator(".date b").inner_text().strip(), "первый день — 4-е")
+    #
+    # С 24 августа день — сам свёртка, а не строка списка: пункты внутри она
+    # тасует. Прежний `#days > ol.days > li` остался от плоского списка и
+    # искал то, чего на странице уже нет.
+    days = page.locator("#days details.day")
+    want(days.count() == 16, f"дней в разделе {days.count()}")
+    want("4" == days.first.locator(".dt b").inner_text().strip(), "первый день — 4-е")
     want(days.first.bounding_box() is not None, "развёрнутое видно, а не спрятано")
+
+    # Одна кнопка на весь раздел — и на телефоне тоже.
+    knob = page.locator("[data-fold-all]")
+    want(knob.count() == 1 and knob.bounding_box() is not None,
+         "кнопка «развернуть все дни» видна")
 
     # ── города и места из вишлиста
     cities = page.locator(".city")

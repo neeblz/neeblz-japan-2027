@@ -392,7 +392,7 @@ def check(trip: dict, plan: list | None = None) -> list[str]:
     known_places = {p["title"]: p for p in trip.get("places", [])}
     slugs = {"Токио": "tokyo", "Киото": "kyoto", "Киносаки": "kinosaki"}
     hop_dates = {t["date"] for t in trip.get("transfers", [])}
-    sites, linked = 0, 0
+    sites, linked, spots = 0, 0, 0
     for day_plan in plan:
         for item in day_plan["items"]:
             if item.get("site"):
@@ -417,6 +417,38 @@ def check(trip: dict, plan: list | None = None) -> list[str]:
                     raise Failed(f'{item["id"]}: переезд стоит на {day_plan["date"]}, '
                                  "а по броням в этот день никто никуда не едет")
 
+            # 15. Разбивка названия по местам. Ссылка вешается на кусок самого
+            #    названия — значит каждое имя обязано в нём найтись, и найтись
+            #    по порядку. Имя мимо строки не покраснело бы нигде: место
+            #    просто осталось бы без ссылки, а это ровно та тихая пропажа,
+            #    от которой стоит правило №6.
+            at = 0
+            for spot in item.get("spots", []):
+                name = (spot.get("name") or "").strip()
+                if not name:
+                    raise Failed(f'{item["id"]}: место в разбивке без названия')
+                found = item["title"].find(name, at)
+                if found < 0:
+                    raise Failed(f'{item["id"]}: места «{name}» нет в названии '
+                                 f'«{item["title"]}» — или оно стоит там раньше '
+                                 "предыдущего")
+                at = found + len(name)
+                if spot.get("map") and spot.get("place"):
+                    raise Failed(f'{item["id"]}: у места «{name}» и карта, и `place` — '
+                                 "адрес обязан жить в одном месте")
+                if spot.get("place"):
+                    known = known_places.get(spot["place"])
+                    if not known:
+                        raise Failed(f'{item["id"]}: места «{spot["place"]}» нет в '
+                                     "`places` — ссылку взять неоткуда")
+                    if not known.get("site"):
+                        raise Failed(f'{item["id"]}: у места «{spot["place"]}» в '
+                                     "`places` нет сайта — ссылке некуда вести")
+                elif not spot.get("map"):
+                    raise Failed(f'{item["id"]}: у места «{name}» нечего открыть — '
+                                 "ни карты, ни `place`")
+                spots += 1
+
     # Её собственный список «что бронировать» — сверка полноты: пункт из него,
     # потерявший свой id при разборе, иначе исчез бы молча.
     for line in json.loads(PLAN_DATA.read_text(encoding="utf-8")).get("book_list", []):
@@ -427,7 +459,9 @@ def check(trip: dict, plan: list | None = None) -> list[str]:
 
     said.append(f"план по дням: {len(plan)} дней, {count} пунктов, "
                 f'{sites} {plural(sites, "свой сайт", "своих сайта", "своих сайтов")} '
-                f'и {linked} {plural(linked, "ссылка", "ссылки", "ссылок")} из `places`')
+                f'и {linked} {plural(linked, "ссылка", "ссылки", "ссылок")} из `places`; '
+                f'{spots} {plural(spots, "место разбито", "места разбиты", "мест разбито")} '
+                "по строкам")
 
     said.append(f"броней {len(stays)}, ночей {len(nights)}, дней {(end - start).days + 1}")
     return said
@@ -774,19 +808,27 @@ def thread(trip: dict, all_legs: list) -> str:
 
 
 def alert_block(alerts: list) -> str:
-    """Ночь, на которой сошлись две брони.
+    """Ночь, на которой сошлись две брони, — и только пока это вопрос.
 
     Тон задаёт `level`. «red» — вопрос, на который она ещё не ответила: сирена
-    и варианты. «calm» — она ответила, и тогда всё это превращается в
-    подгоняние по решённому. Что не меняется от тона: блок есть, ночь названа,
-    обе брони живы. Убрать его можно только вместе с наложением в данных —
-    иначе сборка не пройдёт (см. check).
+    и варианты. «calm» — она уже ответила, и блок превращается в напоминание
+    по решённому: Ни 2026-08-24, «блок **как задумано** убивай, он действует
+    на нервы и мешается». Спокойный блок больше не рисуется вовсе — ни под
+    стрелкой, ни мелким шрифтом.
+
+    Убран **показ, а не данные**. Наложение по-прежнему обязано быть помечено
+    в `trip.json`, и сборка падает, если его убрать (см. check, правила 3–5):
+    молчаливая пропажа оплаченной ночи стоит денег, а спокойная заметка про
+    неё не стоила ничего, кроме её нервов. Красный блок остаётся — прятать
+    вопрос, на который она не ответила, значит прятать его от неё же.
     """
     if not alerts:
         return ""
     out = []
     for a in alerts:
         red = a["level"] == "red"
+        if not red:
+            continue
         facts = "".join(f"<li>{e(x)}</li>" for x in a.get("facts", []))
         options = "".join(
             f"""<li class="opt"><h4>{e(o["title"])}</h4><p>{e(o["detail"])}</p>
@@ -796,7 +838,7 @@ def alert_block(alerts: list) -> str:
         out.append(f"""
 <section class="alert {e(a["level"])}" id="{e(a["id"])}">
   <div class="says">
-    <p class="siren">{"нужно решение" if red else "как задумано"}</p>
+    <p class="siren">нужно решение</p>
     <h2>{e(a["title"])}</h2>
     <p class="lead">{e(a["lead"])}</p>
   </div>
@@ -1253,36 +1295,105 @@ def runs_of(plan: list, all_legs: list) -> list:
     return runs
 
 
-def day_item(item: dict, sites: dict) -> str:
-    """Один пункт дня.
+def spot_link(spot: dict, sites: dict) -> str:
+    """Одно место внутри названия — своей ссылкой.
 
-    Название — ссылка на карту, а не на сайт: в поездке от названия нужно «где
+    Ни 2026-08-24: «там где ты залинковываешь текст, залинковывай **каждую
+    локацию отдельно**, а не строку целиком, чтобы я не гадала, что же по
+    ссылке откроется». «Yasaka Shrine, Maruyama Park, Chion-in» было одной
+    ссылкой на три места, и открывалась она на первом.
+
+    Куда ведёт — написано на самой ссылке (`title`), а не угадывается по виду:
+    у большинства мест это карта, у проверенных в `places` — их официальный
+    сайт, и снаружи эти две ссылки выглядят одинаково.
+
+    Ни карты, ни `place` тут быть не может — это ловит `check` (правило 15);
+    голое имя здесь остаётся честным ответом, а не тихой заглушкой.
+    """
+    name = e(spot["name"])
+    if spot.get("map"):
+        return (f'<a class="sp" href="{e(maplink(spot["map"]))}" target="_blank"'
+                f' rel="noopener" title="на карте">{name}</a>')
+    site = sites.get(spot.get("place", ""))
+    if site:
+        return (f'<a class="sp" href="{e(site)}" target="_blank"'
+                f' rel="noopener" title="официальный сайт">{name}</a>')
+    return name
+
+
+def day_title(item: dict, sites: dict) -> str:
+    """Название пункта: одной ссылкой или разрезанное по местам.
+
+    Ссылка ведёт **на карту**, а не на сайт: в поездке от названия нужно «где
     это», а не «что про это пишут». Поисковая строка лежит в данных (`map`), и
     у бытовых пунктов её нет — «обед» и «выезд» ссылками не притворяются.
 
-    Сайт — отдельной маленькой меткой и только там, где он правда нужен: у
-    бронируемого. Адрес при этом живёт в одном месте — либо своим полем
-    `site`, либо ссылкой на уже проверенное место из `places`; сборка не даёт
-    завести оба сразу.
+    Есть `spots` — ссылкой становится каждое имя внутри строки, а союзы и
+    стрелки между ними остаются текстом. Порядок мест обязан совпасть с
+    порядком в названии; сторожит это `check`, потому что здесь несовпадение
+    вылезло бы исключением посреди сборки, а не понятной строкой.
+
+    `data-map` на разрезанном названии — поисковая строка всей строки целиком.
+    Ссылкой она больше не становится, но её правка обязана видеть тот же
+    адрес, что лежит в файле: пустое поле «как искать на карте» в форме
+    прочиталось бы как «адреса нет», а он есть.
+    """
+    spots = item.get("spots")
+    if not spots:
+        name = e(item["title"])
+        if item.get("map"):
+            return (f'<a class="nm" data-part="title" href="{e(maplink(item["map"]))}"'
+                    f' target="_blank" rel="noopener">{name}</a>')
+        return f'<span class="nm" data-part="title">{name}</span>'
+
+    text, parts, at = item["title"], [], 0
+    for spot in spots:
+        found = text.index(spot["name"], at)
+        parts.append(e(text[at:found]))
+        parts.append(spot_link(spot, sites))
+        at = found + len(spot["name"])
+    parts.append(e(text[at:]))
+    return (f'<span class="nm" data-part="title" data-spots'
+            f' data-map="{e(item.get("map", ""))}">{"".join(parts)}</span>')
+
+
+def day_item(item: dict, sites: dict) -> str:
+    """Один пункт дня.
+
+    **Часов здесь нет.** Ни 2026-08-24: «часы убей, они ломаются при
+    перетаскивании и в целом лишние, **не хочу жить по расписанию**. а если
+    где-то важно время — пометь, что к примеру только до 15». Поле `time` из
+    данных не выброшено — оно просто не рисуется; вместо него `when`, короткая
+    пометка там, где время действительно связывает: заезд, выезд, слот,
+    расписание поезда. Пусто — не рисуется ничего, иначе мы поменяли бы часы
+    на пустое место под часы.
+
+    Пометка живёт в размеченном узле даже пустой: дописать её она может прямо
+    на странице, и узел, которого нет, пришлось бы создавать вторым способом.
+    Спрятан он `hidden`, а `.mk[hidden]` погашен в CSS отдельным правилом —
+    `display:inline-block` перебивает `hidden` молча, и пустая пометка стала
+    бы пустой пилюлей на каждой строке.
+
+    **Адрес уезжает в слово «бронировать».** Ни: «там, где надо бронировать
+    проставь ссылки на сайт прямо в надписи бронировать, **не придумывай
+    новую**» — отдельной метки «сайт» больше нет. Где бронировать надо, а
+    адреса нет (поезда), пометка остаётся текстом и ссылкой не притворяется.
 
     Части подписаны `data-part`, потому что переписывать их будет браузер: её
     правка ложится поверх файлового текста по вечному id, и находить, что
     именно менять, по классу оформления было бы способом однажды не найти.
     """
-    name = e(item["title"])
-    if item.get("map"):
-        title = (f'<a class="nm" data-part="title" href="{e(maplink(item["map"]))}"'
-                 f' target="_blank" rel="noopener">{name}</a>')
-    else:
-        title = f'<span class="nm" data-part="title">{name}</span>'
+    title = day_title(item, sites)
 
-    marks = []
+    when = e(item.get("when", ""))
+    marks = [f'<span class="mk wn" data-part="time"{"" if when else " hidden"}>{when}</span>']
     if item.get("book"):
-        marks.append('<span class="mk bk">бронировать</span>')
-    site = item.get("site") or sites.get(item.get("place", ""))
-    if site:
-        marks.append(f'<a class="mk site" href="{e(site)}" target="_blank"'
-                     f' rel="noopener">сайт</a>')
+        site = item.get("site") or sites.get(item.get("place", ""))
+        if site:
+            marks.append(f'<a class="mk bk" href="{e(site)}" target="_blank"'
+                         f' rel="noopener">бронировать</a>')
+        else:
+            marks.append('<span class="mk bk">бронировать</span>')
     # Переезд уже посчитан в «Переездах» — здесь только пометка и отсылка.
     # Второе число рядом с первым расходится молча, а замечается на кассе.
     if item.get("transfer"):
@@ -1291,7 +1402,6 @@ def day_item(item: dict, sites: dict) -> str:
     note = e(item.get("note", ""))
     return (
         f'<li class="it" data-item="{e(item["id"])}">'
-        f'<span class="tm" data-part="time">{e(item.get("time", ""))}</span>'
         f'<span class="wh">{title}'
         f'<span class="marks">{"".join(marks)}</span>'
         f'<em class="nt" data-part="note"{"" if note else " hidden"}>{note}</em>'
@@ -1317,6 +1427,11 @@ def by_day(trip: dict, stays: list, alerts: list, plan: list, all_legs: list) ->
     Ручек (двинуть, перенести, дописать, убрать) в собранной разметке нет
     нарочно: все они ходят в хранилище, и нарисованная кнопка, которой некуда
     нажать, — обещание, которого страница не может сдержать.
+
+    «Развернуть все дни» — исключение, и именно потому, что она ни в какое
+    хранилище не ходит: свёртка это чистая разметка, и кнопка работает даже
+    тогда, когда расстановка не доехала. Стоит она в собранной странице, а не
+    рисуется скриптом, чтобы не мигать при загрузке.
     """
     flagged = {a["id"]: a["level"] for a in alerts}
     sites = {p["title"]: p["site"] for p in trip.get("places", []) if p.get("site")}
@@ -1365,9 +1480,11 @@ def by_day(trip: dict, stays: list, alerts: list, plan: list, all_legs: list) ->
 <div id="days">
   <p class="sec-note">Пункты можно таскать мышью — внутри дня и между открытыми
      днями, — а через «в день» переносить куда угодно, хоть с 6 января на 17-е.
-     Порядок хранится на сайте, а не в телефоне, и пересборка страницы его не
-     трогает. Названия ведут на карту; «сайт» стоит там, где надо бронировать.</p>
+     Ручки появляются, когда наводишь на строку. Порядок хранится на сайте, а
+     не в телефоне, и пересборка страницы его не трогает. Каждое место в
+     названии ведёт на свою карту.</p>
   <p class="sec-note daysays" data-days-says role="status" hidden></p>
+  <button type="button" class="foldall" data-fold-all aria-expanded="false">развернуть все дни</button>
   <div class="plan" data-plan data-total="{total}">{"".join(blocks)}</div>
 </div>"""
 
@@ -1451,17 +1568,15 @@ def more_block(trip: dict, stays: list, alerts: list, plan: list, all_legs: list
     имя службы и цена не зависят ни от её записей, ни от хранилища. Смысл тот
     же — «кто везёт и почём» видно, не открывая; свёрнутое без подписи
     превращается в вопрос, который приходится решать нажатием.
+
+    **У дней подписи больше нет.** «16 дней · 98 пунктов» отвечало на вопрос,
+    которого она не задавала: Ни 2026-08-24, «подпись к блоку и все кнопки
+    убивай, они только мусорность создают и место занимают». Счёт пунктов
+    остался там, где он что-то значит, — на самом дне.
     """
     svc = trip["luggage"]["service"]
-    total = sum(len(x["items"]) for x in plan)
     tags = {
         "luggage": f'{svc["name"]} · {trip["luggage"]["cost"].split(" за ")[0]}',
-        # Число пунктов подставляет и браузер — оно меняется, как только она
-        # что-то дописала или убрала. Но собранное значение обязано быть верным
-        # само по себе: свёрнутое без подписи превращается в вопрос, а подпись,
-        # ждущая хранилища, — в вопрос с задержкой.
-        "days": f'{len(plan)} {plural(len(plan), "день", "дня", "дней")} · '
-                f'{total} {plural(total, "пункт", "пункта", "пунктов")}',
     }
     parts = [
         ("todo", "Решить и забронировать", checklist(trip)),
@@ -1471,8 +1586,9 @@ def more_block(trip: dict, stays: list, alerts: list, plan: list, all_legs: list
     ]
     return "".join(
         f'<details class="more" data-fold="{e(key)}"><summary>{e(name)}'
-        f'<span class="tag" data-tag="{e(key)}">{e(tags.get(key, ""))}</span>'
-        f'</summary>{body}</details>'
+        + (f'<span class="tag" data-tag="{e(key)}">{e(tags[key])}</span>'
+           if key in tags else "")
+        + f'</summary>{body}</details>'
         for key, name, body in parts
     )
 
@@ -2194,6 +2310,13 @@ input:checked ~ .txt{color:var(--deep); text-decoration:line-through}
 .run > summary .sp{font-size:11.5px; color:var(--quiet)}
 .run > summary .n{font-size:10px; letter-spacing:.08em; color:var(--quiet); margin-left:auto}
 .rdays{padding:0 0 10px 11px}
+/* Два столбца — её слово 24 августа: «сделай дни в два столбца». Сеткой, а не
+   `column-count`: свёртка, разрезанная колоночным переносом, открывается
+   половинками в двух колонках сразу, и день перестаёт быть одной вещью.
+   `align-items:start` — чтобы открытый день не растягивал соседний пустотой. */
+@media (min-width:820px){
+  .rdays{display:grid; grid-template-columns:1fr 1fr; gap:0 26px; align-items:start}
+}
 .day{border-bottom:1px solid var(--hair)}
 .day:last-child{border-bottom:0}
 .day > summary{cursor:pointer; list-style:none; display:flex; align-items:center;
@@ -2211,19 +2334,29 @@ input:checked ~ .txt{color:var(--deep); text-decoration:line-through}
 .dbody{padding:2px 0 12px 41px}
 .dnote{margin:0 0 8px; font-size:12px; color:var(--deep); font-style:italic}
 .items{list-style:none; margin:0; padding:0}
-.it{display:flex; gap:11px; align-items:baseline; padding:5px 0;
+/* `position:relative` — под ручки: на компьютере они уезжают из потока совсем,
+   см. правило про наведение ниже. */
+.it{position:relative; display:flex; gap:11px; align-items:baseline; padding:5px 0;
   border-bottom:1px solid var(--hair)}
 .it:last-child{border-bottom:0}
-.it .tm{flex:none; width:88px; font-family:var(--num); font-size:11px; color:var(--quiet)}
 .it .wh{flex:1 1 auto; min-width:0}
 .it .nm{font-size:13.5px; color:var(--ink)}
-a.nm{color:var(--bronze); text-decoration:underline; text-decoration-color:var(--hair);
-  text-underline-offset:2px}
+a.nm,.nm a.sp{color:var(--bronze); text-decoration:underline;
+  text-decoration-color:var(--hair); text-underline-offset:2px}
 .it .marks{display:inline}
 .mk{display:inline-block; margin-left:7px; font-size:10px; letter-spacing:.06em;
   border-radius:20px; padding:1px 7px; white-space:nowrap}
-.mk.bk{background:var(--sand); color:var(--gold); border:1px solid var(--hair)}
-.mk.site{color:var(--gold); border:1px solid var(--gold); text-decoration:none}
+/* `hidden` без этого правила не работает: `display:inline-block` выше
+   перебивает его молча, и пустая пометка времени стала бы пустой пилюлей на
+   каждой из 98 строк. Ровно этот капкан уже стоял на форме — «спрятано» в
+   разметке и развёрнуто на экране. */
+.it .mk[hidden],.it .nt[hidden]{display:none}
+/* Пометка времени — не расписание, а связка: «заезд с 15:00», «заложить
+   2 часа». Тише брони и без рамки: рамка сделала бы из неё требование. */
+.mk.wn{color:var(--quiet); background:var(--sand); white-space:normal}
+.mk.bk{background:var(--sand); color:var(--gold); border:1px solid var(--hair);
+  text-decoration:none}
+a.mk.bk{border-color:var(--gold)}
 .mk.tr{color:var(--quiet); border:1px dashed var(--rule); white-space:normal}
 .it .nt{display:block; font-size:11.5px; color:var(--quiet); font-style:normal}
 /* Её пункт помечен ромбом — тем же, что и её записи в карточках городов:
@@ -2242,11 +2375,49 @@ a.nm{color:var(--bronze); text-decoration:underline; text-decoration-color:var(-
   background:none; border:1px solid var(--hair); border-radius:6px; padding:3px 7px;
   cursor:pointer; min-height:26px}
 .acts button:hover{color:var(--ink); border-color:var(--rule)}
-.acts .step{font-size:12px; line-height:1; padding:3px 6px}
+.acts .rm{font-size:12px; line-height:1; padding:3px 7px}
 .acts select{max-width:104px}
 .addday{margin-top:9px; background:none; border:1px dashed var(--rule); border-radius:8px;
   padding:7px 12px; font-size:12px; color:var(--quiet); font-family:inherit; cursor:pointer;
   min-height:32px}
+.foldall{margin:0 0 10px; background:none; border:1px solid var(--hair); border-radius:8px;
+  padding:5px 11px; font-size:11.5px; color:var(--quiet); font-family:inherit;
+  cursor:pointer; min-height:28px}
+.foldall:hover{color:var(--ink); border-color:var(--rule)}
+/* ── ручки: не в глаза, но в досягаемости
+
+   Ни 2026-08-24: «подпись к блоку и все кнопки убивай, они только мусорность
+   создают и место занимают». Убрать их совсем нельзя — «в день →» это
+   единственный способ унести пункт с 6 января на 17-е, — поэтому они уходят
+   из спокойного вида, а не со страницы.
+
+   Спрятано **прозрачностью**, а не `display:none` или `visibility:hidden`:
+   оба выкидывают элемент из обхода клавиатурой, и «спрятано от мыши» молча
+   стало бы «недостижимо без мыши». Из потока ручки при этом вынуты совсем —
+   иначе место они занимали бы ровно так же, как и раньше.
+
+   Нажатия ручки ловят всегда, даже невидимые, и это не недосмотр: гасить
+   `pointer-events` вместе с прозрачностью означало бы состояние, в котором
+   до кнопки нельзя дотянуться, пока не наведёшь, — а прицелиться без
+   наведения нельзя ни мышью, ни проверкой. Мышь всё равно проходит над
+   строкой первой и ручки показывает: невидимого нажатия не бывает. Названию
+   это не мешает — под ручками оно закрыто непрозрачным фоном, то есть его
+   не видно ровно тогда, когда по нему нельзя попасть.
+
+   И всё это — только там, где мышь вообще есть. На телефоне наведения не
+   бывает, и спрятать под него значит спрятать навсегда; узкое окно на
+   компьютере тоже отдаём телефонной раскладке, чтобы два правила не спорили
+   за одну строку. */
+@media (hover:hover) and (min-width:701px){
+  .it .grip{position:absolute; left:-15px; top:6px; opacity:0; transition:opacity .12s}
+  .it .acts{position:absolute; right:0; top:50%; transform:translateY(-50%); margin:0;
+    opacity:0; transition:opacity .12s;
+    background:var(--paper); border-radius:8px; padding:2px 0 2px 14px}
+  .it:hover .grip,.it:focus-within .grip,.it.dragging .grip{opacity:1}
+  .it:hover .acts,.it:focus-within .acts{opacity:1}
+  .addday{opacity:0; transition:opacity .12s}
+  .day:hover .addday,.day:focus-within .addday{opacity:1}
+}
 .daysays{color:var(--fire); margin:-8px 0 12px}
 /* Форма пункта — та же, что у записей, но своя: у пункта дня нет ни цены, ни
    состояния оплаты, и показывать ей пустые поля «сколько стоит» значило бы
@@ -2474,11 +2645,10 @@ a.nm{color:var(--bronze); text-decoration:underline; text-decoration-color:var(-
   .rdays{padding-left:4px}
   .dbody{padding-left:14px}
   .it{flex-wrap:wrap}
-  .it .tm{width:auto; flex:0 0 auto}
   .acts{margin-left:0; flex:1 1 100%; flex-wrap:wrap}
   .acts button,.acts select{min-height:36px; display:inline-flex; align-items:center}
   .grip{display:none}
-  .addday{min-height:36px}
+  .addday,.foldall{min-height:36px}
   .itemform{grid-template-columns:1fr}
   .rows dd{font-size:12.5px}
   .city .inner,.city .cap{padding-left:16px; padding-right:16px}
@@ -3112,6 +3282,14 @@ DAYS_JS = """
      Своё она рисует только там, где питону нечего было рисовать: её
      собственные пункты и её правки поверх файлового текста.
 
+     **Название, разрезанное по местам, браузер не пересобирает.** «Yasaka
+     Shrine, Maruyama Park, Chion-in» — три ссылки внутри одной строки, и
+     собрать их здесь второй раз значило бы завести второе описание. Пока она
+     не тронула ни название, ни поисковую строку, сборочная разметка просто
+     остаётся на месте; тронула — разбивка снимается, потому что где в её
+     новом тексте какие места, мы не знаем, а угадать значит увести ссылку не
+     туда.
+
      **Ручек нет, пока хранилище не ответило.** Кнопка «убрать», которой некуда
      нажать, — обещание, которого страница не может сдержать; а «убрал, но не
      сохранилось» на её плане стоит дороже, чем отсутствие кнопки. Пока
@@ -3131,12 +3309,14 @@ DAYS_JS = """
   var MAPS = "https://www.google.com/maps/search/?api=1&query=";
 
   var says = document.querySelector("[data-days-says]");
-  var tag = document.querySelector('[data-tag="days"]');
   var state = { order: {}, own: {}, edits: {}, live: false };
   /* Каким пункт приехал из файла. Снимается один раз, до первой правки:
      читать «как было» из уже переписанной строки — это способ потерять
      файловый текст в тот момент, когда она снимет свою правку. */
   var seed = {};
+  /* Сборочные названия, разрезанные по местам, — снятые до первой правки.
+     Из них же восстанавливается разбивка, когда она снимает свою правку. */
+  var built = {};
   var nodes = {};
   var editing = null;
 
@@ -3161,8 +3341,13 @@ DAYS_JS = """
 
   /* ── чтение и рисование строки */
 
+  /* Поисковая строка пункта. У разрезанного по местам названия она лежит
+     отдельным `data-map`: ссылкой такая строка целиком не становится, но
+     адрес у неё есть, и форма правки обязана показать его, а не пустое поле. */
   function mapOf(node){
-    var href = node && node.getAttribute ? node.getAttribute("href") : null;
+    if (!node || !node.getAttribute) return "";
+    if (node.hasAttribute("data-map")) return node.getAttribute("data-map");
+    var href = node.getAttribute("href");
     if (!href) return "";
     var at = href.indexOf("query=");
     if (at < 0) return "";
@@ -3176,10 +3361,11 @@ DAYS_JS = """
     var note = li.querySelector('[data-part="note"]');
     return {
       id: li.getAttribute("data-item"),
-      time: time ? time.textContent : "",
+      time: time && !time.hidden ? time.textContent : "",
       title: title ? title.textContent : "",
       note: note && !note.hidden ? note.textContent : "",
-      map: mapOf(title)
+      map: mapOf(title),
+      spots: !!(title && title.hasAttribute("data-spots"))
     };
   }
 
@@ -3212,10 +3398,27 @@ DAYS_JS = """
     }
   }
 
+  /* Вернуть сборочное название на место — тем самым узлом, каким его собрал
+     питон. Клон, а не разметка строкой: собирать три ссылки здесь заново
+     значило бы держать второе описание одной вещи. */
+  function keepTitle(li, id){
+    var was = li.querySelector('[data-part="title"]');
+    if (was && was.hasAttribute("data-spots")) return;
+    var fresh = built[id] ? built[id].cloneNode(true) : null;
+    if (!fresh) return;
+    var wh = li.querySelector(".wh");
+    if (was) wh.replaceChild(fresh, was);
+    else wh.insertBefore(fresh, wh.firstChild);
+  }
+
   function paintItem(li, item){
     var time = li.querySelector('[data-part="time"]');
-    if (time) time.textContent = item.time || "";
-    setTitle(li, item.title || "", item.map || "");
+    if (time) {
+      time.textContent = item.time || "";
+      time.hidden = !item.time;
+    }
+    if (item.spots) keepTitle(li, item.id);
+    else setTitle(li, item.title || "", item.map || "");
     var note = li.querySelector('[data-part="note"]');
     if (note) {
       note.textContent = item.note || "";
@@ -3226,13 +3429,19 @@ DAYS_JS = """
   function shell(id){
     var li = el("li", "it mine");
     li.setAttribute("data-item", id);
-    var time = el("span", "tm");
-    time.setAttribute("data-part", "time");
-    li.appendChild(time);
     var wh = el("span", "wh");
-    wh.appendChild(el("span", "marks"));
+    var marks = el("span", "marks");
+    /* Пометка времени лежит там же, где у собранного пункта, и так же
+       прячется пустой: два разных места для одной вещи — это два разных
+       способа её потерять. */
+    var time = el("span", "mk wn");
+    time.setAttribute("data-part", "time");
+    time.hidden = true;
+    marks.appendChild(time);
+    wh.appendChild(marks);
     var note = el("em", "nt");
     note.setAttribute("data-part", "note");
+    note.hidden = true;
     wh.appendChild(note);
     li.appendChild(wh);
     return li;
@@ -3242,6 +3451,8 @@ DAYS_JS = """
     var id = li.getAttribute("data-item");
     nodes[id] = li;
     seed[id] = readItem(li);
+    var title = li.querySelector('[data-part="title"]');
+    if (title && title.hasAttribute("data-spots")) built[id] = title.cloneNode(true);
   });
 
   /* ── разговор с хранилищем */
@@ -3312,29 +3523,33 @@ DAYS_JS = """
   }
 
   function merged(id){
-    var base = seed[id] || { id: id, time: "", title: "", note: "", map: "" };
+    var base = seed[id] || { id: id, time: "", title: "", note: "", map: "", spots: false };
     var patch = state.edits[id];
     if (!patch) return base;
-    var out = { id: id, time: base.time, title: base.title, note: base.note, map: base.map };
+    var out = { id: id, time: base.time, title: base.title, note: base.note,
+                map: base.map, spots: base.spots };
     ["time", "title", "note", "map"].forEach(function(key){
       if (typeof patch[key] === "string") out[key] = patch[key];
     });
+    /* Разбивка по местам — про тот текст, что пришёл из файла. Она переписала
+       название или поисковую строку — где в новой строке какие места, мы не
+       знаем, и притворяться, что знаем, значит вести ссылку не туда.
+
+       Сравниваются значения, а не наличие ключа: форма отправляет все четыре
+       поля разом, поэтому правка одной подробности кладёт в хранилище и
+       название — то же самое, буква в букву. Считать это переписыванием
+       значило бы снять разбивку навсегда с первой же правки чего угодно. */
+    if ((typeof patch.title === "string" && patch.title !== base.title)
+        || (typeof patch.map === "string" && patch.map !== base.map)) out.spots = false;
     return out;
   }
 
   function counts(){
-    var total = 0;
     Array.prototype.forEach.call(plan.querySelectorAll("[data-day-items]"), function(list){
-      var n = list.children.length;
-      total += n;
       var day = list.closest(".day");
       var badge = day ? day.querySelector("[data-count]") : null;
-      if (badge) badge.textContent = n;
+      if (badge) badge.textContent = list.children.length;
     });
-    if (tag) {
-      tag.textContent = DAYS.length + " " + plural(DAYS.length, "день", "дня", "дней")
-        + " · " + total + " " + plural(total, "пункт", "пункта", "пунктов");
-    }
   }
 
   function fail(error){
@@ -3353,15 +3568,6 @@ DAYS_JS = """
   function dayOf(li){
     var list = li.closest("[data-day-items]");
     return list ? list.getAttribute("data-day-items") : "";
-  }
-
-  function step(li, delta){
-    var list = li.closest("[data-day-items]");
-    if (!list) return;
-    var kids = Array.prototype.slice.call(list.children);
-    var at = kids.indexOf(li) + delta;
-    if (at < 0 || at >= kids.length) return;
-    send("PATCH", { id: li.getAttribute("data-item"), to: dayOf(li), at: at });
   }
 
   var picker = null;
@@ -3389,14 +3595,6 @@ DAYS_JS = """
     li.setAttribute("draggable", "true");
 
     var acts = el("span", "acts");
-    var up = el("button", "step", "\\u2191");
-    up.type = "button";
-    up.title = "выше";
-    up.addEventListener("click", function(){ step(li, -1); });
-    var down = el("button", "step", "\\u2193");
-    down.type = "button";
-    down.title = "ниже";
-    down.addEventListener("click", function(){ step(li, 1); });
 
     /* Список дат — способ, который работает всегда. Перетащить с 6 января на
        17-е нельзя физически: между ними два экрана прокрутки. */
@@ -3410,16 +3608,19 @@ DAYS_JS = """
     edit.type = "button";
     edit.addEventListener("click", function(){ openForm(dayOf(li), li); });
 
-    var drop = el("button", "rm", "убрать");
+    /* Ни 2026-08-24: «убрать проставь крестиком просто». Слово ушло из
+       кнопки, но не из подписи: крестик без имени — единственная ручка,
+       которую нельзя прочитать ни глазами, ни голосом. */
+    var drop = el("button", "rm", "\\u2715");
     drop.type = "button";
+    drop.title = "убрать пункт";
+    drop.setAttribute("aria-label", "убрать пункт");
     drop.addEventListener("click", function(){
       var item = state.own[li.getAttribute("data-item")] || merged(li.getAttribute("data-item"));
       if (!window.confirm("Убрать «" + item.title + "» из этого дня?")) return;
       send("DELETE", { id: li.getAttribute("data-item") });
     });
 
-    acts.appendChild(up);
-    acts.appendChild(down);
     acts.appendChild(to);
     acts.appendChild(edit);
     acts.appendChild(drop);
@@ -3505,8 +3706,10 @@ DAYS_JS = """
          это словами, а не всплывающей подсказкой поверх поля. */
       + '<div class="f wide"><label data-title-label>что это</label>'
       + '<input name="title" maxlength="120" placeholder="например: кофейня у реки"></div>'
-      + '<div class="f"><label>во сколько</label>'
-      + '<input name="time" maxlength="40" placeholder="можно пусто"></div>'
+      /* Не «во сколько», а пометка: часов на странице больше нет, и поле,
+         спрашивающее время, вернуло бы их её же руками. */
+      + '<div class="f"><label>пометка времени</label>'
+      + '<input name="time" maxlength="40" placeholder="например: заложить 2 часа"></div>'
       + '<div class="f"><label>подробность</label>'
       + '<input name="note" maxlength="200" placeholder="необязательно"></div>'
       + '<div class="f wide"><label>как искать на карте</label>'
@@ -3611,8 +3814,51 @@ DAYS_JS = """
   Array.prototype.forEach.call(plan.querySelectorAll(".day"), function(day){
     day.addEventListener("toggle", function(){
       if (day.open && state.live) wireDay(day);
+      foldSays();
     });
   });
+
+  /* ── одна кнопка на весь раздел
+
+     Свёртка — чистая разметка, поэтому кнопка работает и тогда, когда
+     расстановка не доехала: ей нечего спрашивать у хранилища.
+
+     Разворачивая дни, разворачиваем и отрезки городов: день внутри свёрнутого
+     города открыт, но не виден, и кнопка выглядела бы сработавшей наполовину.
+     Что она сделает следующим нажатием — написано на ней самой, а не
+     угадывается по тому, что было раньше. */
+
+  var foldAll = document.querySelector("[data-fold-all]");
+
+  function shutDays(){
+    var shut = 0;
+    Array.prototype.forEach.call(plan.querySelectorAll("details.day"), function(day){
+      if (!day.open) shut++;
+    });
+    return shut;
+  }
+
+  function foldSays(){
+    if (!foldAll) return;
+    var open = shutDays() === 0;
+    foldAll.textContent = open ? "свернуть все дни" : "развернуть все дни";
+    foldAll.setAttribute("aria-expanded", open ? "true" : "false");
+  }
+
+  if (foldAll) {
+    foldAll.addEventListener("click", function(){
+      var opening = shutDays() > 0;
+      if (opening) {
+        Array.prototype.forEach.call(plan.querySelectorAll("details.run"), function(run){
+          run.open = true;
+        });
+      }
+      Array.prototype.forEach.call(plan.querySelectorAll("details.day"), function(day){
+        day.open = opening;
+      });
+      foldSays();
+    });
+  }
 
   /* ── ближайший день открыт сразу
 
@@ -3631,6 +3877,7 @@ DAYS_JS = """
   }
 
   counts();
+  foldSays();
   ask("GET").then(adopt).catch(function(error){
     state.live = false;
     tell("твои перестановки не загрузились (" + error.message

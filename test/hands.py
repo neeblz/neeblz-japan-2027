@@ -242,9 +242,68 @@ with sync_playwright() as pw:
     want(day6.locator(".acts").count() == len(order6),
          "ручки появились у каждого пункта — значит хранилище ответило")
 
-    # 1. Вниз на одну строку — и это переживает перезагрузку.
-    items6.first.locator(".acts .step").last.click()
-    page.wait_for_timeout(700)
+    # ── ручки: не в глаза, но в досягаемости
+    #
+    # Ни 2026-08-24: «подпись к блоку и все кнопки убивай, они только
+    # мусорность создают и место занимают». Стрелки «↑ / ↓» убраны совсем —
+    # перетаскивание она освоила; остальное спрятано до наведения.
+    #
+    # Проверяется настоящей прозрачностью на экране, а не правилом в CSS: у
+    # `display:none` и `visibility:hidden` вид тот же, но из обхода клавиатурой
+    # они элемент выкидывают, и «спрятано от мыши» молча стало бы
+    # «недостижимо без мыши». Поэтому три разных вопроса подряд: не видно
+    # спокойной, видно под мышью, видно под клавиатурой.
+    want(day6.locator(".acts .step").count() == 0, "стрелок «↑ / ↓» больше нет")
+    seen = page.evaluate("""() => {
+      const li = document.querySelector('[data-day-items="2027-01-06"] > li');
+      return getComputedStyle(li.querySelector('.acts')).opacity;
+    }""")
+    want(seen == "0", f"спокойная строка ручек не показывает (прозрачность {seen})")
+
+    items6.first.hover()
+    page.wait_for_timeout(200)
+    seen = page.evaluate("""() => {
+      const li = document.querySelector('[data-day-items="2027-01-06"] > li');
+      return getComputedStyle(li.querySelector('.acts')).opacity;
+    }""")
+    want(seen == "1", f"под мышью ручки появились (прозрачность {seen})")
+
+    # Клавиатура: `Tab` доходит до списка дат внутри строки, и вместе с
+    # фокусом обязана появиться вся тройка ручек.
+    keyed = page.evaluate("""() => {
+      const li = document.querySelector('[data-day-items="2027-01-06"] > li');
+      const pick = li.querySelector('.acts select');
+      pick.focus();
+      return { got: document.activeElement === pick,
+               shown: getComputedStyle(li.querySelector('.acts')).opacity,
+               cross: li.querySelector('.acts .rm').getAttribute('aria-label') };
+    }""")
+    want(keyed["got"] and keyed["shown"] == "1",
+         f'с клавиатуры ручки достижимы и видны (фокус {keyed["got"]}, {keyed["shown"]})')
+    want(keyed["cross"] == "убрать пункт",
+         f'крестик назван словами для голоса и клавиатуры: {keyed["cross"]!r}')
+    cross = " ".join(items6.first.locator(".acts .rm").inner_text().split())
+    want(cross == "✕", f"«убрать» стало просто крестиком: «{cross}»")
+    page.evaluate("() => document.activeElement.blur()")
+
+    # Куда именно бросать — считается от края строки, а не от её центра.
+    #
+    # Место определяется серединой строки под курсором, и центр — ровно эта
+    # середина: какая сторона победит, решает округление координат мыши до
+    # целых. Раньше это сходило с рук случайно, а после снятия колонки часов
+    # строки стали ниже, и «в середину» начало читаться как «перед».
+    # Проверка, зависящая от округления, проверяет округление.
+    def drop_on(item, target, side):
+        box = page.locator(f'[data-item="{target}"]').bounding_box()
+        page.drag_and_drop(
+            f'[data-item="{item}"]', f'[data-item="{target}"]',
+            target_position={"x": min(40, box["width"] - 4),
+                             "y": 2 if side == "before" else box["height"] - 2})
+        page.wait_for_timeout(800)
+
+    # 1. Вниз на одну строку — перетаскиванием, потому что другого способа
+    #    больше нет.
+    drop_on("d06-1", "d06-2", "after")
     page.reload(wait_until="load")
     page.wait_for_timeout(900)
     unfold()
@@ -266,11 +325,10 @@ with sync_playwright() as pw:
 
     # 3. Перетаскивание — приятное поверх надёжного.
     #
-    # Брошено в середину первой строки, то есть ниже её середины, — значит
-    # «после неё». Место считается по середине строки под курсором, как везде:
-    # выше середины — перед ней, ниже — за ней.
-    page.drag_and_drop('[data-item="d17-9"]', '[data-item="d17-1"]')
-    page.wait_for_timeout(800)
+    # Брошено в нижний край первой строки — значит «после неё». Место
+    # считается по середине строки под курсором: выше середины — перед ней,
+    # ниже — за ней.
+    drop_on("d17-9", "d17-1", "after")
     dragged = [x.get_attribute("data-item")
                for x in page.locator('[data-day-items="2027-01-17"] > li').all()]
     want(dragged[:2] == ["d17-1", "d17-9"],
@@ -303,6 +361,29 @@ with sync_playwright() as pw:
     want("Обед в Наре" in page.locator('[data-item="d11-6"]').inner_text(),
          "переписанное название видно на месте пункта")
 
+    # 5б. Строка, разрезанная по местам, переживает и правку, и её отмену.
+    #
+    # Это самое хрупкое место всей затеи. Расстановка приезжает из хранилища и
+    # перерисовывает каждую строку — а «Yasaka Shrine, Maruyama Park,
+    # Chion-in» собрано питоном тремя ссылками, и собрать их в браузере
+    # заново значило бы держать второе описание одной вещи. Поэтому браузер
+    # разбивку **не трогает**, пока она не тронула текст; тронула — разбивка
+    # снимается, потому что где в её новой строке какие места, мы не знаем.
+    want(page.locator('[data-item="d12-7"] .nm a').count() == 3,
+         "три места в строке остались тремя ссылками после ответа хранилища")
+    page.locator('[data-item="d12-7"] .acts .ed').click()
+    page.fill('.itemform input[name="title"]', "Ясака, Маруяма, Тионъин")
+    page.click(".itemform .save")
+    page.wait_for_timeout(900)
+    want(page.locator('[data-item="d12-7"] .nm a').count() == 0,
+         "её текст разбивку снял — угаданная ссылка увела бы не туда")
+    page.locator('[data-item="d12-7"] .acts .ed').click()
+    page.fill('.itemform input[name="title"]', "")
+    page.click(".itemform .save")
+    page.wait_for_timeout(900)
+    want(page.locator('[data-item="d12-7"] .nm a').count() == 3,
+         "снятая правка вернула все три ссылки, а не одну строку текста")
+
     # 6. Удаление спрашивает — и «нет» слушают.
     agree["yes"] = False
     asked.clear()
@@ -315,24 +396,30 @@ with sync_playwright() as pw:
 
     # ── вернуть дни как были
     #
-    # Возвращается всё теми же кнопками, которыми двигали: «наверх» одним
-    # движением тут нет, и заводить её ради уборки за собой значило бы
-    # проверять не ту страницу, которой она пользуется.
-    def nudge(item, date, want_at):
-        for _ in range(14):
-            rows = [x.get_attribute("data-item")
-                    for x in page.locator(f'[data-day-items="{date}"] > li').all()]
-            at = rows.index(item)
-            if at == want_at:
-                return True
-            page.locator(f'[data-item="{item}"] .acts .step').nth(0 if at > want_at else 1).click()
-            page.wait_for_timeout(450)
-        return False
+    # Возвращается всё теми же движениями, которыми двигали: кнопки «наверх»
+    # тут нет, и заводить её ради уборки за собой значило бы проверять не ту
+    # страницу, которой она пользуется.
+    def rows_of(date):
+        return [x.get_attribute("data-item")
+                for x in page.locator(f'[data-day-items="{date}"] > li').all()]
 
+    def put_after(item, target, date):
+        drop_on(item, target, "after")
+        rows = rows_of(date)
+        return rows.index(item) == rows.index(target) + 1
+
+    def put_before(item, target, date):
+        drop_on(item, target, "before")
+        rows = rows_of(date)
+        return rows.index(item) == rows.index(target) - 1
+
+    # Перенос списком дат кладёт пункт в конец дня — обратно наверх его
+    # поднимает то же перетаскивание, которым он оттуда и уехал.
     page.locator('[data-item="d06-1"] .acts select').select_option("2027-01-06")
     page.wait_for_timeout(700)
-    want(nudge("d06-1", "2027-01-06", 0), "пункт поднят обратно наверх дня")
-    want(nudge("d17-9", "2027-01-17", 8), "перетащенный пункт возвращён в конец дня")
+    want(put_before("d06-1", "d06-2", "2027-01-06"), "пункт поднят обратно наверх дня")
+    want(put_after("d17-9", "d17-8", "2027-01-17"),
+         "перетащенный пункт возвращён в конец дня")
     page.locator('[data-item="d11-6"] .acts .ed').click()
     page.fill('.itemform input[name="title"]', "")
     page.click(".itemform .save")

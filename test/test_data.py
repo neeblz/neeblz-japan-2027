@@ -210,15 +210,24 @@ class PageShowsIt(unittest.TestCase):
     def setUpClass(cls):
         cls.html = render(copy.deepcopy(REAL))
 
-    def test_the_fourteenth_is_a_calm_note_not_an_alarm(self):
-        """Ни решила: так и задумано. Страница не должна с ней спорить."""
-        self.assertIn('class="alert calm"', self.html)
-        self.assertIn("Ночь 14 → 15 января", self.html)
-        self.assertIn("как задумано", self.html)
-        self.assertIn(
-            "14 → 15 ночуешь в Киносаки; OMO3 оплачен с 14-го, заезд 15-го.",
-            self.html,
-        )
+    def test_the_settled_night_says_nothing_on_the_page_anymore(self):
+        """Спокойный блок про ночь 14 → 15 больше не рисуется.
+
+        Раньше здесь проверялось обратное: что блок есть и говорит «как
+        задумано». Ни 2026-08-24 сняла это сама — «блок **как задумано**
+        убивай, он действует на нервы и мешается»: страница повторяла ей
+        решённое на первом экране при каждом заходе.
+
+        Проверка перевёрнута, а не удалена, и вот почему: пропажа блока
+        обязана остаться **решением**, а не случайностью следующей правки.
+        Данные при этом не тронуты — наложение по-прежнему помечено в
+        `trip.json`, и убрать его молча нельзя (см. класс выше).
+        """
+        self.assertNotIn("как задумано", self.html)
+        self.assertNotIn('class="alert calm"', self.html)
+        self.assertNotIn("Ночь 14 → 15 января", self.html)
+        # Само наложение из данных при этом никуда не делось.
+        self.assertTrue(any(a["id"] == "overlap-14" for a in REAL["alerts"]))
 
     def test_no_word_demands_a_decision_anymore(self):
         for gone in (
@@ -801,6 +810,12 @@ class TheDaysAreHers(unittest.TestCase):
     def bent(self):
         return copy.deepcopy(self.plan)
 
+    def block(self, item_id: str) -> str:
+        """Разметка одного пункта — по вечному id, а не по порядку."""
+        return re.search(
+            r'<li class="it" data-item="%s".*?</li>' % re.escape(item_id),
+            self.days, re.S).group(0)
+
     # ── данные
 
     def test_the_plan_covers_the_trip_day_by_day(self):
@@ -904,22 +919,79 @@ class TheDaysAreHers(unittest.TestCase):
         """В поездке от названия нужно «где это», а не «что про это пишут»."""
         for day in self.plan:
             for item in day["items"]:
-                block = re.search(
-                    r'<li class="it" data-item="%s".*?</li>' % re.escape(item["id"]),
-                    self.days, re.S).group(0)
+                block = self.block(item["id"])
+                if item.get("spots"):
+                    # Разрезанная строка проверяется отдельно: там ссылка у
+                    # каждого места своя, и у проверенного в `places` она
+                    # ведёт на его сайт, а не на карту.
+                    continue
                 if item.get("map"):
                     self.assertIn("google.com/maps/search/", block, item["id"])
                     self.assertIn('target="_blank"', block, item["id"])
                     self.assertIn('rel="noopener"', block, item["id"])
-                else:
-                    # «Обед» и «выезд» ссылками не притворяются.
+                elif not item.get("book"):
+                    # «Обед» и «выезд» ссылками не притворяются. Исключение —
+                    # «бронировать» с адресом: это ссылка на пометке, а не на
+                    # названии, и стоит она у поездов и билетов без адреса.
                     self.assertNotIn("<a ", block, item["id"])
 
-    def test_the_site_mark_stands_only_where_it_is_needed(self):
-        marks = re.findall(r'<a class="mk site" href="([^"]+)"', self.days)
-        self.assertEqual(len(marks), 9, "четыре бронируемых, музей и четыре места")
-        for href in marks:
+    def test_each_place_in_a_line_gets_its_own_link(self):
+        """Ни 2026-08-24: «залинковывай каждую локацию отдельно, а не строку
+        целиком, чтобы я не гадала, что же по ссылке откроется».
+
+        «Yasaka Shrine, Maruyama Park, Chion-in» было одной ссылкой на три
+        места — открывалась она на первом, а два других молча вели туда же.
+        """
+        split = [i for day in self.plan for i in day["items"] if i.get("spots")]
+        self.assertEqual(len(split), 16, "строк с несколькими местами")
+        for item in split:
+            block = self.block(item["id"])
+            self.assertIn("data-spots", block, item["id"])
+            self.assertEqual(block.count("<a "), len(item["spots"]), item["id"])
+            for spot in item["spots"]:
+                self.assertIn(">" + spot["name"] + "</a>", block, item["id"])
+        # Поисковая строка всей строки не пропала — ссылкой она больше не
+        # становится, но правка обязана видеть тот же адрес, что и файл.
+        for item in split:
+            self.assertIn('data-map="%s"' % item["map"], self.block(item["id"]))
+
+    def test_a_place_missing_from_the_line_is_caught(self):
+        """Ссылка вешается на кусок названия: имя мимо строки не покраснело бы
+        нигде — место просто осталось бы без ссылки."""
+        plan = self.bent()
+        item = next(i for day in plan for i in day["items"] if i.get("spots"))
+        item["spots"][0]["name"] = "Место, которого в строке нет"
+        with self.assertRaises(Failed) as it:
+            check(copy.deepcopy(REAL), plan)
+        self.assertIn("нет в названии", str(it.exception))
+
+    def test_a_place_with_nothing_to_open_is_caught(self):
+        plan = self.bent()
+        item = next(i for day in plan for i in day["items"] if i.get("spots"))
+        item["spots"][0].pop("map", None)
+        item["spots"][0].pop("place", None)
+        with self.assertRaises(Failed) as it:
+            check(copy.deepcopy(REAL), plan)
+        self.assertIn("нечего открыть", str(it.exception))
+
+    def test_the_address_rides_inside_the_word_book(self):
+        """Ни 2026-08-24: «там, где надо бронировать проставь ссылки на сайт
+        прямо в надписи бронировать, **не придумывай новую**».
+
+        Отдельной метки «сайт» больше нет: она была лишней надписью рядом с
+        уже стоящей пометкой.
+        """
+        self.assertNotIn('class="mk site"', self.days)
+        links = re.findall(r'<a class="mk bk" href="([^"]+)"', self.days)
+        self.assertEqual(len(links), 5, "три билета и два стола")
+        for href in links:
             self.assertTrue(href.startswith("https://"), href)
+        # Где бронировать надо, а адреса нет (поезда, чемодан) — пометка
+        # остаётся, но ссылкой не притворяется.
+        plain = re.findall(r'<span class="mk bk">', self.days)
+        booked = [i for day in self.plan for i in day["items"] if i.get("book")]
+        self.assertEqual(len(links) + len(plain), len(booked))
+        self.assertEqual(len(plain), 4, "четыре поезда без своей страницы")
 
     def test_the_verified_places_are_linked_not_copied(self):
         """Четыре места уже проверены — адрес берётся оттуда, а не пишется второй раз."""
@@ -963,10 +1035,67 @@ class TheDaysAreHers(unittest.TestCase):
         for gone in ("убрать", "правка", "+ пункт", "перенести в день"):
             self.assertNotIn(gone, self.days, f"«{gone}» нарисовано до ответа хранилища")
 
-    def test_the_fold_says_what_is_inside_without_opening(self):
-        tag = re.search(r'<span class="tag" data-tag="days">([^<]*)</span>', self.html).group(1)
-        self.assertIn("16 дней", tag)
-        self.assertIn("98 пунктов", tag)
+    def test_the_clock_is_gone_from_the_page_but_not_from_the_data(self):
+        """Ни 2026-08-24: «часы убей, они ломаются при перетаскивании и в целом
+        лишние, **не хочу жить по расписанию**».
+
+        Из данных `time` не выброшен — её текст мы не выкидываем; он просто не
+        рисуется. Проверяются оба конца: часов на странице нет, в файле есть.
+        """
+        self.assertNotIn('class="tm"', self.days)
+        # Расписание — это вилка «с и до», а не всякое упоминание часа: «заезд
+        # с 15:00» она как раз просила оставить. Ищется именно вилка.
+        self.assertIsNone(re.search(r"\d{1,2}:\d{2}\s*[–—-]\s*\d{1,2}:\d{2}", self.days),
+                          "часовая вилка вернулась на страницу")
+        clocked = [i for day in self.plan for i in day["items"]
+                   if re.search(r"\d{1,2}:\d{2}", i.get("time", ""))]
+        self.assertGreater(len(clocked), 40, "часы в данных остались — её текст не выкидываем")
+        for item in clocked:
+            # У «Заселения» 13-го час стоит и в снятых часах, и в пометке
+            # («заезд с 15:00»): пометка — её же просьба, и сверять по ней
+            # значило бы требовать, чтобы час не назывался вообще.
+            if re.search(r"\d{1,2}:\d{2}", item.get("when", "")):
+                continue
+            self.assertNotIn(item["time"], self.block(item["id"]), item["id"])
+
+    def test_a_time_mark_stands_only_where_time_ties_something(self):
+        """«а если где-то важно время — пометь, что к примеру только до 15».
+
+        Пустая пометка не рисуется вовсе — иначе мы поменяли бы часы на пустое
+        место под часы. Узел при этом стоит и пустой: дописать пометку она
+        может прямо на странице, и второй способ его создать означал бы два
+        описания одной вещи.
+        """
+        marked = [i for day in self.plan for i in day["items"] if i.get("when")]
+        self.assertEqual(len(marked), 17, "пометок времени на 98 пунктов")
+        for item in marked:
+            self.assertIn(f'<span class="mk wn" data-part="time">{item["when"]}</span>',
+                          self.block(item["id"]), item["id"])
+        blank = next(i for day in self.plan for i in day["items"] if not i.get("when"))
+        self.assertIn('<span class="mk wn" data-part="time" hidden></span>',
+                      self.block(blank["id"]))
+        # `hidden` на `.mk` погашен в CSS отдельным правилом: `inline-block`
+        # перебивает его молча, и пустая пометка стала бы пустой пилюлей.
+        self.assertIn(".it .mk[hidden]", self.html)
+
+    def test_the_fold_of_the_days_carries_no_subtitle(self):
+        """Ни 2026-08-24: «подпись к блоку и все кнопки убивай, они только
+        мусорность создают и место занимают».
+
+        Раньше здесь проверялось обратное — что «16 дней · 98 пунктов» стоит у
+        свёртки. Проверка перевёрнута, а не удалена: подпись обязана не
+        вернуться следующей правкой. У багажа своя подпись остаётся — про неё
+        разговора не было, и она отвечает на вопрос «кто везёт и почём».
+        """
+        self.assertNotIn('data-tag="days"', self.html)
+        self.assertNotIn("16 дней · 98 пунктов", self.html)
+        self.assertIn('data-tag="luggage"', self.html)
+
+    def test_one_button_folds_the_whole_section(self):
+        """Свёртка — чистая разметка, поэтому кнопка стоит в собранной
+        странице: она работает и тогда, когда расстановка не доехала."""
+        self.assertIn('<button type="button" class="foldall" data-fold-all', self.days)
+        self.assertIn("развернуть все дни", self.days)
 
     def test_her_notes_to_a_day_are_kept_word_for_word(self):
         for day in self.plan:
