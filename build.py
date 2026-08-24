@@ -2842,8 +2842,14 @@ input:checked ~ .txt{color:var(--deep); text-decoration:line-through}
 
    Прозрачность здесь не используется нигде: `opacity` съедает контраст молча,
    и 5.6:1 из переменной превращается в 2.9:1 на экране. Приглушённое
-   приглушено цветом и кеглем, а не прозрачностью. */
-.plan{max-width:940px}
+   приглушено цветом и кеглем, а не прозрачностью.
+
+   **Раздел идёт во всю полосу макета** — её слово 24 августа: «по дням
+   расположите по ширине макета, а не по левой стороне». До этого дня план
+   держал 940 точек внутри полосы 1266 и стоял у левого края, пока подпись над
+   ним, справка и чек шли во всю ширину: раздел читался как недорисованный, а
+   не как более узкий нарочно. Своего максимума у плана больше нет — ширину
+   ему задаёт полоса страницы, как и остальным разделам. */
 .run{border-top:1px solid var(--hair)}
 .run:first-child{border-top:0}
 .run > summary{cursor:pointer; list-style:none; display:flex; flex-wrap:wrap;
@@ -2861,9 +2867,18 @@ input:checked ~ .txt{color:var(--deep); text-decoration:line-through}
 /* Два столбца — её слово 24 августа: «сделай дни в два столбца». Сеткой, а не
    `column-count`: свёртка, разрезанная колоночным переносом, открывается
    половинками в двух колонках сразу, и день перестаёт быть одной вещью.
-   `align-items:start` — чтобы открытый день не растягивал соседний пустотой. */
+   `align-items:start` — чтобы открытый день не растягивал соседний пустотой.
+
+   Столбцов ровно два и при полной ширине: лишняя ширина ушла им (452 → 608),
+   а не третьей колонке. Третья разрезала бы день на 390 точек — это ширина
+   телефона, где дни как раз идут в одну колонку, потому что уже не помещаются.
+
+   `minmax(0,1fr)`, а не `1fr`: `1fr` не даёт колонке стать уже своего
+   содержимого, и одна длинная ссылка без пробелов растянула бы сетку за край
+   полосы вместо переноса. */
 @media (min-width:820px){
-  .rdays{display:grid; grid-template-columns:1fr 1fr; gap:0 26px; align-items:start}
+  .rdays{display:grid; grid-template-columns:repeat(2,minmax(0,1fr));
+    gap:0 34px; align-items:start}
 }
 .day{border-bottom:1px solid var(--hair)}
 .day:last-child{border-bottom:0}
@@ -2894,7 +2909,13 @@ input:checked ~ .txt{color:var(--deep); text-decoration:line-through}
 .it{position:relative; display:flex; gap:11px; align-items:baseline; padding:5px 0;
   border-bottom:1px solid var(--hair)}
 .it:last-child{border-bottom:0}
-.it .wh{flex:1 1 auto; min-width:0}
+/* Полоса чтения строки — 72 знака, и это единственное, что не выросло вместе с
+   разделом. Сегодняшние пункты до неё не достают (самый длинный — 264 точки
+   при столбце 608), так что на её планах правило не видно вовсе; оно ловит то,
+   что она впишет сама: заметка в 63 знака у нас уже есть, а строка во весь
+   столбец читалась бы хуже короткой. Ширины столбца это не трогает — граница
+   строки и линейка под пунктом остаются на месте. */
+.it .wh{flex:1 1 auto; min-width:0; max-width:72ch}
 .it .nm{font-size:13.5px; color:var(--ink)}
 a.nm,.nm a.sp{color:var(--calm-ink); text-decoration:underline;
   text-decoration-color:var(--hair); text-underline-offset:2px}
