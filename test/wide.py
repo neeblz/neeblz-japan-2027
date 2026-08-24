@@ -91,6 +91,26 @@
 **1872 с 24 августа, при том что в справке стало на блок больше.** Порог
 опущен с 1950 до 1880 по последнему измерению, как и всегда.
 
+**1978 с 24 августа, вечер: приехал настоящий билет.** Перелёт стоил 107
+точек, и это цена содержания, а не оформления: два плеча Turkish Airlines,
+номера рейсов, самолёты, пересадки, багаж, правила обмена и три примечания про
+планирование. Своей высоты у него ровно столько:
+
+* три карточки в ряд (туда, обратно, билет) — 51 точка. Закрытыми они держат
+  две строки каждая: путь с часами и подпись помельче. Стопкой это стоило бы
+  153, поэтому ряд;
+* примечания под ними — 30. Открытыми, потому что они не про билет, а про
+  планирование: какой аэропорт ближе, чем занять последний день;
+* остальное — отступы блока.
+
+Ещё 3 точки взяла сама нитка: перелёт встал в неё первой и последней меткой, и
+«Тбилиси → Нарита» на столбце шириной в один день переносится на две строки.
+
+Торговаться тут можно ровно об одном, и это по-прежнему не наше решение:
+четыре свёртки над справкой держат 176 точек ради одной строки текста каждая,
+и два столбца вернули бы 88. Правка чужого раздела — вопрос к Ни, а не к сетке.
+2 экрана это 1800, её слово; 1978 — 2.2 экрана.
+
 Заплачено это не текстом, а рамками. Три свёртки справки («до вылета»,
 «деньги», «такс-фри») стоят закрытыми в один ряд карточками, а не четвёртой,
 пятой и шестой полосой в столбик: раздел 234 → 219 точек, и это **вместе** с
@@ -131,7 +151,7 @@ HERE = Path(__file__).resolve().parent.parent
 PAGE = HERE / "dist" / "index.html"
 SHOTS = HERE.parent / "shots"
 DESK = {"width": 1440, "height": 900}
-LIMIT = 1880
+LIMIT = 1980
 MAIN, SMALL = 7.0, 4.5
 
 problems, notes = [], []
@@ -273,7 +293,11 @@ with sync_playwright() as pw:
     page.wait_for_timeout(120)
 
     # ── переезды: чем и сколько ехать — в нитке, а не только пунктом то-до
-    rides = page.locator(".thread .move.has")
+    #
+    # Перелёт живёт в той же строке нитки и тоже помечен `has` (иначе телефон
+    # его спрячет), поэтому переезды считаются без него: слить их значило бы
+    # проверять «пять чего-нибудь» вместо трёх поездов.
+    rides = page.locator(".thread .move.has:not(.fly)")
     want(rides.count() == 3, f"переездов в нитке {rides.count()}")
     nine = " ".join(rides.first.inner_text().split())
     want("синкансэн" in nine, f"9 января назван поезд: «{nine}»")
@@ -297,6 +321,68 @@ with sync_playwright() as pw:
     # разные вещи (одно с ¥, другое с ≈).
     want("13 970" in back.replace(" ", " ").replace(" ", " ") and "≈" in back,
          f"15 января: известное и неизвестное стоят рядом — «{back}»")
+
+    # ── перелёт: первым и последним в нитке, аэропорты — без раскрытия
+    #
+    # Меряется по экрану, а не по разметке: вопрос здесь ровно один — увидит ли
+    # она, что прилетает в Нариту, а улетает из Ханэды, ничего не открывая. В
+    # последний день это разница в час дороги из Асакусы.
+    fly = page.locator(".thread .move.fly")
+    want(fly.count() == 2, f"перелёт стоит в нитке двумя метками ({fly.count()})")
+    first = " ".join(fly.first.inner_text().split())
+    last = " ".join(fly.last.inner_text().split())
+    want("Тбилиси" in first and "Нарита" in first, f"нитка начинается перелётом: «{first}»")
+    want("Ханэда" in last and "Тбилиси" in last, f"и кончается им же: «{last}»")
+    want(page.locator(".thread .move.fly").first.bounding_box()["x"]
+         < page.locator(".thread .bar").first.bounding_box()["x"] + 4,
+         "вылет стоит до Токио, а не после него")
+    home = " ".join(page.locator(".thread .home").inner_text().split())
+    want("Ханэда" in home and "22:05" in home,
+         f"аэропорт возвращения — на последнем столбце: «{home}»")
+
+    # Три карточки: два плеча и билет. Снаружи — путь и часы, внутри — номера
+    # рейсов, самолёты, пересадки, багаж и правила обмена.
+    folds = page.locator(".fly-fold")
+    want(folds.count() == 3, f"карточек перелёта {folds.count()}: туда, обратно, билет")
+    want(page.locator(".fly-fold[open]").count() == 0, "все три свёрнуты, пока их не открыли")
+    tops = page.evaluate("""() => [...document.querySelectorAll('.fly-fold')]
+        .map(d => Math.round(d.getBoundingClientRect().top))""")
+    want(len(set(tops)) == 1, f"и стоят в один ряд, а не стопкой (верх: {tops})")
+    said = " ".join(page.locator(".flights .row").inner_text().split())
+    want("TK" not in said, f"номеров рейсов снаружи нет — они под стрелкой: «{said[:60]}…»")
+    # Цены билета на собранной странице нет ни одной: он уже посчитан её
+    # записью в чеке, и второе такое же число читалось бы как вторая трата.
+    want("1 222" not in said and "1222" not in said.replace(" ", ""),
+         f"цена билета не напечатана второй раз: «{said}»")
+
+    page.locator(".fly-fold").first.locator("summary").click()
+    page.wait_for_timeout(150)
+    opened = " ".join(page.locator(".fly-fold").first.inner_text().split())
+    for must in ("TK379", "Boeing 787-9", "пересадка 1 ч 35 мин в Стамбуле"):
+        want(must in opened, f'по стрелке видно «{must}»')
+    page.locator(".fly-fold").first.locator("summary").click()
+    page.wait_for_timeout(120)
+
+    # Срока бесплатной отмены у билета нет вовсе — и это сказано словом там же,
+    # где правила. Наверх, к отельным срокам, перелёт при этом не идёт:
+    # выдуманная дата там была бы худшим видом подсказки.
+    ticket = page.locator(".fly-fold.tkt")
+    ticket.locator("summary").click()
+    page.wait_for_timeout(150)
+    rules = " ".join(ticket.inner_text().split())
+    want("бесплатной отмены нет" in rules.lower(), f"про отмену сказано словом: «{rules[-90:]}»")
+    want("₾313" in rules.replace(" ", "") and "23 кг" in rules,
+         "штраф за обмен и багаж стоят там же")
+    ticket.locator("summary").click()
+    page.wait_for_timeout(120)
+    head = " ".join(page.locator(".deadlines").inner_text().split())
+    want("Ханэда" not in head and "Turkish" not in head,
+         f"перелёту срок отмены не выдуман: «{head[:60]}…»")
+
+    # Примечания — про планирование, а не про билет, поэтому открыты.
+    mind = page.locator(".flights .mind li")
+    want(mind.count() == 3 and mind.first.is_visible(),
+         f"примечания к перелёту видны без раскрытия ({mind.count()})")
 
     # ── карточки городов: четыре в ряд, все одной высоты сверху
     cards = page.evaluate("""() => [...document.querySelectorAll('.city')]
@@ -337,8 +423,12 @@ with sync_playwright() as pw:
          "ничего не требует решения")
 
     # ── пустые поля с подписью: ни одного выдуманного числа
+    # Их стало два: перелёт ушёл отсюда вместе с настоящим билетом — он больше
+    # не неизвестное, а её запись в чеке. Пустое поле рядом с оплаченным
+    # билетом врало бы в другую сторону, чем прежде, но так же молча.
     blanks = page.locator(".blank b").all_inner_texts()
-    want(len(blanks) == 3, f"пустых полей с подписью {len(blanks)}: {', '.join(blanks)}")
+    want(len(blanks) == 2, f"пустых полей с подписью {len(blanks)}: {', '.join(blanks)}")
+    want(not any("ерел" in x for x in blanks), "перелёта среди непосчитанного нет")
 
     # ── подробности проживания: снаружи только то, что решает и стоит денег
     fine = page.locator(".city .stayfine")
@@ -403,8 +493,13 @@ with sync_playwright() as pw:
     want("не входит" in notall, f"под суммой сказано, чего в ней нет: «{notall}»")
     want(not re.search(r"\d", notall),
          f"чисел в этой строке нет — второй счёт разошёлся бы с первым: «{notall}»")
-    for named in ("перелёт", "поезда", "чемодан", "еда", "метро", "сувениры"):
+    # Перелёта в этом списке больше нет и быть не должно: билет куплен и стоит
+    # в чеке её записью. Строка «в это число не входит» рядом с посчитанным
+    # билетом — это тот же второй счёт, только с обратным знаком.
+    for named in ("поезда", "чемодан", "еда", "метро", "сувениры"):
         want(named in notall.lower(), f'«{named}» назван среди того, чего в итоге нет')
+    want("перел" not in notall.lower(),
+         f'перелёт посчитан в чеке и здесь не назван: «{notall}»')
     want(page.locator(".notall").bounding_box()["y"]
          < page.locator(".total .bar").bounding_box()["y"],
          "строка стоит вплотную к сумме, а не в подвале чека")
@@ -703,9 +798,32 @@ with sync_playwright() as pw:
 
     # Переезд нужен в дороге больше всего — на телефоне он остаётся, хотя
     # числовая ось и стрелки «прилёт / домой» без неё прячутся.
-    seen = phone.locator(".thread .move.has")
+    seen = phone.locator(".thread .move.has:not(.fly)")
     want(seen.count() == 3 and seen.first.bounding_box() is not None,
          f"переезды видны и на телефоне ({seen.count()})")
+    # Перелёт нужен в дороге ровно так же — и его дата не должна налезать на
+    # название. Класс `.dt` носит ещё и клетка числа в разделе «по дням» с
+    # `width:30px`, и она доставала сюда: «9 января» печаталось поверх
+    # «Токио → Киото». На компьютере дата спрятана, поэтому дожило до телефона.
+    air = phone.locator(".thread .move.fly")
+    want(air.count() == 2 and air.first.bounding_box() is not None,
+         f"перелёт виден и на телефоне ({air.count()})")
+    laid = phone.evaluate("""() => {
+      const bad = [];
+      for (const hd of document.querySelectorAll('.thread .move .hd')) {
+        const dt = hd.querySelector('.dt');
+        if (!dt || !dt.getBoundingClientRect().width) continue;
+        const range = document.createRange();
+        const text = [...hd.childNodes].find(n => n.nodeType === 3 && n.textContent.trim());
+        if (!text) continue;
+        range.selectNode(text);
+        const a = dt.getBoundingClientRect(), b = range.getBoundingClientRect();
+        if (b.left < a.right - 1) bad.push(dt.textContent.trim() + ' × ' + text.textContent.trim());
+      }
+      return bad;
+    }""")
+    want(not laid, "дата в нитке не налезает на название"
+         + (f" — {laid[:2]}" if laid else ""))
     want(phone.locator(".thread .move:not(.has)").first.bounding_box() is None,
          "стрелка без переезда на телефоне спрятана")
     want("13 970" in " ".join(seen.first.inner_text().split())

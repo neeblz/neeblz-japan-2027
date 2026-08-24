@@ -670,6 +670,165 @@ class WhatCostsMoneyIsOnTop(unittest.TestCase):
         self.assertIn(REAL["luggage"]["cost"], self.html)
 
 
+class TheFlightIsShownOnceAndCountedOnce(unittest.TestCase):
+    """Настоящий билет Turkish Airlines: показан целиком, посчитан один раз.
+
+    Здесь только одно по-настоящему опасное место, и оно не в вёрстке.
+    Билет **уже куплен и уже стоит в чеке** — её записью, $1 222,10,
+    «оплачено». Сборка его не складывает и сложить не может: она про жильё.
+    Зато она умеет сказать про него второй раз словом — «ещё не посчитано»
+    или «в это число не входит», — и тогда одна и та же тысяча долларов
+    окажется на странице дважды с противоположными знаками.
+
+    Поэтому проверяется не сложение (складывать нечего), а именно это: ни
+    одного числа билета в сборке, ни одного слова про неучтённый перелёт.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.html = render(copy.deepcopy(REAL))
+        cls.fly = REAL["flights"]
+        cls.island = json.loads(
+            re.search(r'id="japan-data">(.*?)</script>', cls.html, re.S).group(1)
+        )
+
+    # ── деньги: билет считается ровно один раз, и не здесь
+
+    def test_the_built_total_is_housing_and_nothing_but_housing(self):
+        housing = self.island["housing"]
+        self.assertEqual(housing["jpy"], sum(s["total_jpy"] for s in REAL["stays"]))
+        self.assertEqual(housing["count"], len(REAL["stays"]),
+                         "перелёт не бронь отеля и в счёт жилья не входит")
+        check = re.search(r'<div class="total" id="check">(.*?)<div class="bar"',
+                          self.html, re.S).group(1)
+        self.assertIn("290675", re.sub(r"\s+", "", check), "итог под чеком не поехал")
+
+    def test_not_one_digit_of_the_ticket_is_printed_by_the_build(self):
+        """Второе такое же число рядом с первым читается как вторая трата.
+
+        Билет стоит $1 222,10 — это ¥194 168 по курсу 158.88. Ни того, ни
+        другого на собранной странице быть не должно: сумма приезжает из
+        хранилища её записью, и печатать её ещё раз значит завести второй
+        экземпляр той же тысячи долларов.
+        """
+        digits = re.sub(r"[\s   ]", "", self.html)
+        in_yen = round(self.fly["usd"] * REAL["fx"]["usd_per_jpy"])
+        for amount in (f'{self.fly["usd"]:.2f}'.replace(".", ","), "1222", str(in_yen)):
+            self.assertNotIn(amount, digits, f"цена билета напечатана сборкой: {amount}")
+
+    def test_the_flight_is_never_called_uncounted(self):
+        blanks = re.search(r'<div class="unknown">(.*?)</div>\s*</section>',
+                           self.html, re.S).group(1)
+        self.assertNotIn("ерел", blanks, "«ещё не посчитано» про уже оплаченный билет")
+        notall = re.search(r'<p class="notall">(.*?)</p>', self.html, re.S).group(1)
+        self.assertNotIn("ерел", notall, "«в это число не входит» про то, что входит")
+
+    def test_calling_the_flight_uncounted_again_is_caught(self):
+        """Слово, возвращённое в данные, — это тот же второй счёт."""
+        for spoil in (
+            lambda x: x["unknown"].append({"label": "Перелёт", "note": "туда и обратно"}),
+            lambda x: x["not_in_total"].append("перелёт"),
+        ):
+            data = broken()
+            spoil(data)
+            with self.assertRaises(Failed) as it:
+                check(data)
+            self.assertIn("второй раз", str(it.exception))
+
+    # ── нитка: перелёт первым и последним
+
+    def test_the_thread_starts_and_ends_with_the_flight(self):
+        moves = re.findall(r'<div class="move[^"]*"[^>]*>(.*?)</div>', self.html, re.S)
+        self.assertIn("Тбилиси", moves[0], "нитка начиналась прямо с города")
+        self.assertIn("Нарита", moves[0])
+        self.assertIn("Ханэда", moves[-1], "после Асакусы нитка обрывалась в пустоту")
+        self.assertIn("Тбилиси", moves[-1])
+        # И то и другое — метки с подробностью, а не голые стрелки: на телефоне
+        # видны только они (см. CSS, `.move:not(.has)`).
+        self.assertEqual(self.html.count('class="move has fly"'), 2)
+
+    def test_both_airports_read_without_opening_anything(self):
+        """Прилёт в Нариту, вылет из Ханэды — разница в час дороги из Асакусы."""
+        outside = re.sub(r"<details[^>]*>.*?</details>", "", self.html, flags=re.S)
+        for named in ("Нарита", "Ханэда"):
+            self.assertIn(named, outside, f"{named} видна только раскрытой")
+        # Час вылета стоит на самом отрезке в воздухе и на последнем столбце.
+        self.assertIn('<span class="edge i">12:10</span>', self.html)
+        self.assertIn('<span class="air">Ханэда 22:05</span>', self.html)
+
+    # ── подробности: под стрелкой, как у проживания
+
+    def test_flight_numbers_and_planes_live_under_the_arrow(self):
+        folds = re.findall(r'<details class="fly-fold[^"]*">(.*?)</details>',
+                           self.html, re.S)
+        self.assertEqual(len(folds), 3, "два плеча и билет")
+        inside = " ".join(f.split("</summary>")[1] for f in folds)
+        for hop in (h for leg in self.fly["legs"] for h in leg["hops"]):
+            self.assertIn(hop["flight"], inside, hop["flight"])
+            self.assertIn(hop["plane"], inside, hop["plane"])
+        for leg in self.fly["legs"]:
+            self.assertIn(leg["layover"], inside, "пересадка — внутри, между рейсами")
+        for bag in self.fly["baggage"].values():
+            self.assertIn(bag, inside, bag)
+        for rule in self.fly["rules"].values():
+            if isinstance(rule, str):
+                self.assertIn(rule, inside, rule)
+        # Снаружи при этом ни одного номера рейса: подпись решает «открывать
+        # ли», а не заменяет собой открытое.
+        outside = " ".join(f.split("</summary>")[0] for f in folds)
+        self.assertNotIn("TK", outside)
+
+    def test_the_ticket_says_out_loud_that_there_is_no_free_cancellation(self):
+        """Срока у билета нет вовсе — и это сказано словом, а не пустотой.
+
+        Наверх, к срокам отелей, перелёт не идёт: выдуманная дата там была бы
+        худшим видом подсказки. Но и молчать нельзя — отмена без срока стоит
+        дороже всех штрафов в этом блоке.
+        """
+        self.assertIs(self.fly["rules"]["free_cancel"], False)
+        ticket = re.search(r'<details class="fly-fold tkt">(.*?)</details>',
+                           self.html, re.S).group(1)
+        self.assertIn("бесплатной отмены нет", ticket)
+        self.assertIn("не существует", ticket, "сказано, что даты нет, а не что она позже")
+        head = re.search(r'<details class="deadlines">(.*?)</details>', self.html, re.S).group(1)
+        self.assertEqual(head.count("data-deadline="), len(REAL["stays"]),
+                         "сроки наверху — только отельные")
+        for word in ("Turkish", "Ханэда", "Нарита"):
+            self.assertNotIn(word, head, "перелёту срок не выдуман")
+
+    def test_the_three_notes_are_shown_not_folded(self):
+        """Примечания про планирование, а не про билет: они стоят открытыми."""
+        mind = re.search(r'<ul class="mind">(.*?)</ul>', self.html, re.S).group(1)
+        for note in self.fly["notes"]:
+            self.assertIn(note, mind, note[:40])
+
+    # ── и поломки, на которые правило обязано ответить
+
+    def test_a_flight_that_misses_the_trip_dates_is_caught(self):
+        for key, when in (("туда", "2027-01-03"), ("обратно", "2027-01-18")):
+            data = broken()
+            next(x for x in data["flights"]["legs"] if x["dir"] == key)["date"] = when
+            with self.assertRaises(Failed) as it:
+                check(data)
+            self.assertIn("поездка", str(it.exception))
+
+    def test_a_leg_without_flights_is_caught(self):
+        data = broken()
+        data["flights"]["legs"][0]["hops"] = []
+        with self.assertRaises(Failed) as it:
+            check(data)
+        self.assertIn("нет ни одного рейса", str(it.exception))
+
+    def test_a_free_cancellation_appearing_out_of_nowhere_is_caught(self):
+        """Появилась бесплатная отмена — значит появился и срок, а срок живёт
+        наверху, вместе с отельными. Тихо оставить его словом нельзя."""
+        data = broken()
+        data["flights"]["rules"]["free_cancel"] = True
+        with self.assertRaises(Failed) as it:
+            check(data)
+        self.assertIn("нужен срок", str(it.exception))
+
+
 class TheSuitcaseIsInOnePlace(unittest.TestCase):
     """Ни 2026-08-24: «в трёх местах пишем про багаж и нигде не указываем сайт».
 
@@ -1100,8 +1259,13 @@ class TheDaysAreHers(unittest.TestCase):
         может прямо на странице, и второй способ его создать означал бы два
         описания одной вещи.
         """
+        # 20, а не 17: с настоящим билетом пометки времени появились у вылета
+        # 4-го, прилёта 5-го и последнего дня 19-го — «вылет 12:10 из Тбилиси»,
+        # «прилёт в Нариту 08:40», «вылет 22:05 из Ханэды». Число прибито
+        # нарочно, чтобы пометка, тихо приросшая к четвёртому десятку пунктов,
+        # краснела здесь.
         marked = [i for day in self.plan for i in day["items"] if i.get("when")]
-        self.assertEqual(len(marked), 17, "пометок времени на 98 пунктов")
+        self.assertEqual(len(marked), 20, "пометок времени на 98 пунктов")
         for item in marked:
             self.assertIn(f'<span class="mk wn" data-part="time">{item["when"]}</span>',
                           self.block(item["id"]), item["id"])

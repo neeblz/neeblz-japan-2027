@@ -218,6 +218,30 @@ test("сумма разделов равна итогу, и сумма сост�
   assert.equal(sums.priceless, 1, "«дьюти-фри» без цены обязан быть назван вслух");
 });
 
+test("купленный билет считается один раз — её записью, а не сборкой", () => {
+  /* Настоящий перелёт Turkish Airlines: $1 222,10, оплачен. Сборка страницы
+     не приносит из него ни иены (это сторожит `test_data.py`), значит весь он
+     приезжает сюда — и ровно одной записью.
+
+     Второй счёт проверяется тем же способом, каким он и случился бы: та же
+     запись, заведённая дважды. Если итог от этого не изменится, значит тест
+     сторожит не сложение, а собственное мнение о нём. */
+  const ticket = make({ kind: "booking", title: "Перелёт", amount: "1222,10",
+                        currency: "usd", state: "paid" });
+  const inYen = Math.round(1222.1 * 158.88);
+
+  const once = Money.tally({ fx: FX, housing: HOUSING, entries: [ticket] });
+  assert.equal(Money.usdOf(ticket, FX), 1222, "её доллары остаются её числом");
+  assert.equal(once.jpy, HOUSING.jpy + inYen);
+  assert.equal(once.states.paid, HOUSING.paid + inYen, "билет оплачен, а не предстоит");
+  assert.equal(once.sections.find((s) => s.key === "housing").jpy, HOUSING.jpy,
+    "жильё от билета не выросло ни на иену");
+
+  const twice = Money.tally({ fx: FX, housing: HOUSING,
+                              entries: [ticket, { ...ticket, id: "второй" }] });
+  assert.equal(twice.jpy - once.jpy, inYen, "второй экземпляр обязан быть виден в итоге");
+});
+
 test("запись без цены не превращается в ноль и не портит итог", () => {
   const withNothing = [entry({ title: "Виза" }), entry({ title: "Багаж" })];
   const sums = Money.tally({ fx: FX, housing: HOUSING, entries: withNothing });

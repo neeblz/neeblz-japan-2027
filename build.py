@@ -463,6 +463,43 @@ def check(trip: dict, plan: list | None = None) -> list[str]:
                 f'{spots} {plural(spots, "место разбито", "места разбиты", "мест разбито")} '
                 "по строкам")
 
+    # 16. Перелёт посчитан ровно один раз — её записью в чеке.
+    #
+    #     Это единственное на странице, что умеет испортить её деньги молча.
+    #     Билет куплен и стоит в чеке записью «Перелёт, $1 222,10, оплачено»;
+    #     сборка его не складывает и сложить не может — но она может показать
+    #     его ещё раз словом. «Перелёт» в списке «ещё не посчитано» или в
+    #     строке «чего в итоге нет» — это второй счёт того же билета, только
+    #     с обратным знаком: одно место говорит «заплачено», другое «впереди».
+    #
+    #     Проверяется поэтому не сложение (складывать нечего), а именно слово:
+    #     ошибиться здесь можно только в данных, и стоит эта ошибка ровно
+    #     столько же, сколько ошибка в сложении.
+    fly = trip.get("flights")
+    if fly:
+        out, back = flight_legs(trip)
+        if not out or not back:
+            raise Failed("у перелёта должны быть оба плеча — «туда» и «обратно»")
+        if d(out["date"]) != start:
+            raise Failed(f'вылет {out["date"]}, а поездка начинается {start}')
+        if d(back["date"]) != end:
+            raise Failed(f'обратный рейс {back["date"]}, а поездка кончается {end}')
+        for leg in (out, back):
+            if not leg.get("hops"):
+                raise Failed(f'плечо «{leg["dir"]}»: нет ни одного рейса')
+        if fly.get("rules", {}).get("free_cancel") is not False:
+            raise Failed("у билета появилась бесплатная отмена — тогда ей нужен срок, "
+                         "и он обязан встать к срокам отелей, а не остаться словом")
+        counted = [x for x in trip.get("not_in_total", [])
+                   + [u["label"] for u in trip.get("unknown", [])]
+                   if "перелёт" in x.lower() or "перелет" in x.lower()]
+        if counted:
+            raise Failed(f'перелёт посчитан её записью в чеке, а «{counted[0]}» говорит '
+                         "обратное — это то же число второй раз, только с другим знаком")
+        said.append(f'перелёт: {port(out, "from")} → {port(out, "to")} {out["date"]}, '
+                    f'{port(back, "from")} → {port(back, "to")} {back["date"]}; '
+                    f'{fly["carrier"]}, в чеке — её записью, сборка его не складывает')
+
     said.append(f"броней {len(stays)}, ночей {len(nights)}, дней {(end - start).days + 1}")
     return said
 
@@ -574,6 +611,29 @@ def legs(stays: list) -> list:
     return out
 
 
+def flight_legs(trip: dict) -> tuple[dict | None, dict | None]:
+    """Два плеча перелёта — туда и обратно, по слову в самих данных.
+
+    Возвращается пара, а не список: страница спрашивает у неё разные вещи в
+    разных местах (вылет — в начале нитки, аэропорт возвращения — в её конце),
+    и перебирать список ради «того, который туда» пришлось бы четырежды.
+    """
+    fly = trip.get("flights") or {}
+    by_dir = {leg.get("dir"): leg for leg in fly.get("legs", [])}
+    return by_dir.get("туда"), by_dir.get("обратно")
+
+
+def port(leg: dict, side: str) -> str:
+    """Аэропорт плеча, если он назван, иначе город.
+
+    Названия аэропортов стоят в данных только там, где они что-то решают:
+    Нарита и Ханэда — это два разных конца Токио, и путать их дорого. У
+    Тбилиси аэропорт один, и звать его по имени значило бы заставлять её
+    вспоминать, тот ли это, из которого она летит.
+    """
+    return leg.get(f"{side}_airport") or leg[side]
+
+
 def span_dates(a: date, b: date) -> str:
     """«5 — 9 января»: месяц называется один раз, если он один."""
     if a.month == b.month:
@@ -678,6 +738,7 @@ def thread(trip: dict, all_legs: list) -> str:
     start, end = d(trip["trip"]["start"]), d(trip["trip"]["end"])
     total = (end - start).days          # ночей в поездке
     transit = trip.get("transit", [])
+    out, back = flight_legs(trip)
 
     def col(day: date, n: int = 1) -> str:
         return f"grid-column:{(day - start).days + 1}/span {n}"
@@ -694,8 +755,13 @@ def thread(trip: dict, all_legs: list) -> str:
             f'<span class="hotel quiet">{e(where)}</span>'
             f'<span class="stem"></span></div>'
         )
+        # Час вылета — на самом отрезке, той же меткой, что часы заезда у
+        # городов: ночь в воздухе начинается не в полночь.
+        clock = (f'<span class="edge i">{e(out["dep"])}</span>'
+                 if out and d(out["date"]) == when else "")
         bars.append(
-            f'<div class="bar air" style="{col(when)}"><span class="n">{e(leg["title"].lower())}</span></div>'
+            f'<div class="bar air" style="{col(when)}">{clock}'
+            f'<span class="n">{e(leg["title"].lower())}</span></div>'
         )
 
     for leg in all_legs:
@@ -717,9 +783,14 @@ def thread(trip: dict, all_legs: list) -> str:
             f'<span class="n">{n} {plural(n, "ночь", "ночи", "ночей")}</span></div>'
         )
 
+    # Последний столбец — день отъезда. Аэропорт вылета стоит прямо на нём:
+    # прилетает она в Нариту, а улетает из Ханэды, и в последний день это не
+    # мелочь, а разница в дороге из Асакусы.
+    home_air = (f'<span class="air">{e(back.get("from_airport") or back["from"])} '
+                f'{e(back["dep"])}</span>' if back else "")
     bars.append(
         f'<div class="home" style="grid-column:{total + 1}">'
-        f'<b>{end.day}</b><span>домой</span></div>'
+        f'<b>{end.day}</b><span>домой</span>{home_air}</div>'
     )
 
     # Полоса «оплачено шире, чем прожито». Рисуется только там, где эти два
@@ -756,6 +827,23 @@ def thread(trip: dict, all_legs: list) -> str:
               f'прилёт в {leg["city"]}' if i == 0 else f'{all_legs[i - 1]["city"]} → {leg["city"]}')
              for i, leg in enumerate(all_legs)]
     marks.append((end, "домой"))
+
+    # Перелёт — первой и последней меткой нитки. До этого линия начиналась
+    # прямо с города: она возникала в Токио, а домой уезжала в пустоту за
+    # правым краем. Плечо названо аэропортами, а не городом, потому что они
+    # разные — Нарита туда, Ханэда обратно, — и видно это должно быть без
+    # раскрытия. Подробности рейсов живут ниже, под стрелкой.
+    flights_at = {}
+    for leg in (out, back):
+        if not leg:
+            continue
+        when = d(leg["date"])
+        flights_at[when] = leg
+        text = f'{port(leg, "from")} → {port(leg, "to")}'
+        if when == end:
+            marks[-1] = (when, text)
+        else:
+            marks.insert(0, (when, text))
 
     # Чем именно едет переезд — из `transfers`, по дате. Раньше поезда лежали
     # только пунктами то-до: то-до говорит «купить билет», а нитка обязана
@@ -797,8 +885,16 @@ def thread(trip: dict, all_legs: list) -> str:
                 money_bits += (f'<span class="cost guess">≈{yen(low)}–{yen(high)}</span>')
             detail = (f'<span class="ride"><span class="how">{e(ride["how"])}</span>'
                       f'<span class="hrs">{e(ride["hours"])}</span>{money_bits}</span>')
+        # Перелёт в нитке говорит только «сколько лететь и с пересадкой ли»:
+        # столбец здесь шириной в один день, а номера рейсов, самолёты и багаж
+        # ждут под стрелкой ниже. Цены нет нарочно — она стоит в чеке её
+        # записью, и второе число рядом с первым читалось бы как ещё одна трата.
+        air = flights_at.get(when)
+        if air:
+            detail = f'<span class="ride"><span class="hrs">{e(air["hours"])}</span></span>'
+        klass = "move has fly" if air else ("move has" if ride else "move")
         moves.append(
-            f'<div class="move{" has" if ride else ""}" style="{col(when, max(room, 1))}">'
+            f'<div class="{klass}" style="{col(when, max(room, 1))}">'
             f'<span class="hd"><i></i><span class="dt">{day_month(when.isoformat())}</span>'
             f'{e(text)}</span>{detail}</div>'
         )
@@ -853,6 +949,97 @@ def alert_block(alerts: list) -> str:
   <p class="closing">{e(a["closing"])}</p>
 </section>""")
     return "".join(out)
+
+
+def flights_block(trip: dict) -> str:
+    """Перелёт: два плеча снаружи, подробности рейсов под стрелкой.
+
+    Снаружи ровно то, что решает: откуда, куда, во сколько и сколько лететь.
+    Аэропорты названы своими именами, потому что они разные — прилёт в Нариту,
+    вылет из Ханэды, — и в последний день это разница в час дороги из Асакусы.
+    Прочитаться это должно, ничего не открывая: под стрелкой лежат номера
+    рейсов, самолёты, пересадки и багаж — то, что нужно в день вылета, а не при
+    планировании.
+
+    **Цены здесь нет ни одной, и это не забывчивость.** Билет уже стоит в чеке
+    её записью — $1 222,10, «оплачено», — а второе такое же число рядом
+    читалось бы как ещё одна трата. Правило то же, что у жилья: одно число
+    живёт в одном месте, иначе расходятся они молча (см. `check`, правило 16).
+
+    Срока бесплатной отмены у билета нет вовсе, поэтому наверх, к срокам
+    отелей, перелёт не идёт: выдуманная там дата была бы худшим видом
+    подсказки. Сказано это словом — там же, где показаны остальные правила.
+    """
+    fly = trip.get("flights")
+    if not fly:
+        return ""
+
+    def leg_card(leg: dict) -> str:
+        when = d(leg["date"])
+        lands = d(leg["arr_date"]) if leg.get("arr_date") else when
+        # Снаружи — только то, что решает: день, сколько лететь и то, что
+        # прилёт уже назавтра. Пересадка стоит внутри, между своими рейсами:
+        # там она объясняет разрыв в часах, а в подписи была бы четвёртым
+        # числом, из-за которого строка переносится на вторую.
+        meta = [f'{day_month(leg["date"])}, {weekday(leg["date"])}']
+        if lands != when:
+            meta.append(f'прилёт {day_month(leg["arr_date"])}')
+        meta.append(leg["hours"])
+
+        rows = []
+        for i, hop in enumerate(leg.get("hops", [])):
+            if i and leg.get("layover"):
+                rows.append(f'<li class="wait">пересадка {e(leg["layover"])}</li>')
+            rows.append(
+                f'<li><b>{e(hop["flight"])}</b>'
+                f'<span class="way">{e(hop["from"])} {e(hop["dep"])} → '
+                f'{e(hop["to"])} {e(hop["arr"])}</span>'
+                f'<span class="plane">{e(hop["plane"])}</span></li>'
+            )
+        return f"""
+<details class="fly-fold">
+  <summary>
+    <b class="path"><span class="dir">{e(leg["dir"])}</span>{e(port(leg, "from"))} <i>{e(leg["dep"])}</i>
+       → {e(port(leg, "to"))} <i>{e(leg["arr"])}</i></b>
+    <span class="meta">{e(" · ".join(meta))}</span>
+  </summary>
+  <ol class="hops">{"".join(rows)}</ol>
+</details>"""
+
+    bag = fly.get("baggage", {})
+    rules = fly.get("rules", {})
+    fine = [rules[k] for k in ("change", "refund") if rules.get(k)]
+    # Срок отмены — единственное место, где сборка говорит своими словами, а не
+    # словами данных: сказать нечего, и сказать это надо вслух. Дата тут была бы
+    # выдумкой, прочерк — обещанием.
+    if rules.get("free_cancel") is False:
+        fine.append('<span class="nofree">бесплатной отмены нет</span>: срока, '
+                    "до которого деньги вернут, у билета не существует")
+
+    ticket = f"""
+<details class="fly-fold tkt">
+  <summary>
+    <b class="path"><span class="dir">билет</span>{e(fly["carrier"])}
+       {'<span class="ok">оплачен</span>' if fly.get("paid") else ""}</b>
+    <span class="meta">{e(fly.get("cabin", ""))} · багаж и правила обмена</span>
+  </summary>
+  <dl class="rows">
+    <div><dt>в трюм</dt><dd>{e(bag.get("checked", ""))}</dd></div>
+    <div><dt>в салон</dt><dd>{e(bag.get("cabin", ""))}</dd></div>
+  </dl>
+  <ul class="fine">{"".join(f"<li>{x}</li>" for x in fine)}</ul>
+</details>"""
+
+    # Примечания стоят открытыми нарочно: они не про билет, а про планирование
+    # — какой аэропорт ближе, чем занять последний день, где оформлять такс-фри.
+    # Под стрелкой их прочтёт только тот, кто уже знает, что они там есть.
+    mind = "".join(f"<li>{e(x)}</li>" for x in fly.get("notes", []))
+
+    return f"""
+<section class="flights" aria-label="перелёт">
+  <div class="row">{"".join(leg_card(x) for x in flight_legs(trip) if x)}{ticket}</div>
+  {f'<ul class="mind">{mind}</ul>' if mind else ''}
+</section>"""
 
 
 def places_block(leg: dict, places: list) -> str:
@@ -2002,11 +2189,18 @@ code{font-size:.88em; background:var(--mist); padding:1px 5px; border-radius:4px
 .thread .bar.air{background:transparent; border:1px dashed var(--rule); color:var(--quiet);
   background-image:repeating-linear-gradient(45deg,rgba(146,160,188,.16) 0 5px,transparent 5px 10px)}
 .thread .bar.air .n{color:var(--quiet); font-weight:500}
+/* Отрезок в воздухе прозрачный, и белые часы на нём не видны вовсе — их
+   контраст к бумаге 1.15. Час вылета читается тем же тоном, что и подпись. */
+.thread .bar.air .edge{color:var(--quiet)}
 .thread .home{border-left:1px solid var(--rule); padding-left:11px; display:flex;
   flex-direction:column; justify-content:flex-end; height:62px}
 .thread .home b{font-family:var(--serif); font-size:20px; line-height:1}
 .thread .home span{font-size:9.5px; letter-spacing:.14em; text-transform:uppercase;
   color:var(--quiet); margin-top:4px}
+/* Аэропорт возвращения — на самом последнем столбце: улетает она из Ханэды, а
+   прилетала в Нариту, и в день отъезда это разница в дороге, а не буква. */
+.thread .home .air{font-size:10px; font-family:var(--num); letter-spacing:0;
+  text-transform:none; margin-top:2px}
 .thread .paidrow{margin-top:4px; height:15px}
 /* Оплачено сверх прожитого: обводка и штриховка, а не тот же цвет побледнее.
    Бледный оттенок — единственное, что не переживает плохой экран. */
@@ -2045,6 +2239,73 @@ code{font-size:.88em; background:var(--mist); padding:1px 5px; border-radius:4px
 /* Что покрывает записанное число — рядом с ним, а не отдельной строкой:
    строка съедала бы высоту нитки втрое чаще, чем добавляла смысл. */
 .thread .move .covers{font-size:9.5px}
+/* Перелёт стоит на столбце шириной в один день, а «Тбилиси → Нарита» в него
+   не влезает строкой. Переносится, а не обрезается: половина названия
+   аэропорта — это ровно та подпись, из-за которой едут не туда.
+   Стрелка при переносе прижимается к первой строке: по центру двух строк она
+   встаёт напротив второго слова и показывает не туда, куда указывает. */
+.thread .move.fly .hd{white-space:normal; align-items:flex-start}
+.thread .move.fly .hd i{margin-top:4px}
+.thread .move.fly .ride{padding-left:0}
+
+/* ── перелёт: два плеча и билет, три карточки в ряд
+
+   Ряд, а не стопка, по той же причине, по которой в ряд поставлены свёртки
+   справки: три полосы во всю ширину под ниткой — это три экрана прокрутки за
+   тем, что читается одной строкой каждое. Закрытыми они держат две строки:
+   куда-откуда-во сколько и подпись помельче.
+
+   Стрелка нарисована той же треугольной меткой, что у подробностей
+   проживания: на этой странице она значит «здесь есть что открыть», и второй
+   знак для того же означал бы, что знаки надо запоминать. */
+.flights{margin:0 0 18px}
+.flights .row{display:grid; grid-template-columns:repeat(3,1fr); gap:9px}
+.fly-fold{background:var(--card); border-radius:10px; padding:9px 13px 9px 11px}
+.fly-fold > summary{cursor:pointer; list-style:none; display:grid;
+  grid-template-columns:13px 1fr; gap:1px 5px; align-items:start}
+.fly-fold > summary::-webkit-details-marker{display:none}
+.fly-fold > summary::before{content:""; grid-row:1; align-self:start; margin-top:5px;
+  width:0; height:0; border-left:6px solid var(--calm);
+  border-top:4.5px solid transparent; border-bottom:4.5px solid transparent}
+.fly-fold[open] > summary::before{border-left:4.5px solid transparent;
+  border-right:4.5px solid transparent; border-top:6px solid var(--calm); border-bottom:0;
+  margin-top:7px}
+.fly-fold .path{grid-column:2; font-size:13.5px; font-weight:600; line-height:1.3}
+/* Часы — тем же моноширинным, что и всюду на странице: время читается
+   числом, а не словом, и в столбик оно должно вставать ровно. */
+.fly-fold .path i{font-style:normal; font-family:var(--num); font-size:12.5px;
+  font-weight:500; color:var(--deep)}
+/* «туда» стоит в той же строке, что и сам путь, а не над ним: отдельной
+   строкой этот ярлык стоил бы 25 точек высоты на всю страницу и ни одного
+   слова смысла — направление и так читается по городам. */
+.fly-fold .dir{font-size:9.5px; letter-spacing:.16em; margin-right:8px;
+  text-transform:uppercase; color:var(--quiet); font-weight:700}
+.fly-fold .ok{font-size:10.5px; font-weight:600; color:var(--done); letter-spacing:.02em}
+.fly-fold .meta{grid-column:2; font-size:10.5px; color:var(--quiet); line-height:1.35}
+.fly-fold .hops{list-style:none; margin:8px 0 0; padding:0; display:grid; gap:3px;
+  font-size:11.5px}
+.fly-fold .hops li{display:flex; flex-wrap:wrap; align-items:baseline; gap:0 8px}
+.fly-fold .hops b{font-family:var(--num); font-size:11.5px; color:var(--calm-ink)}
+.fly-fold .hops .way{font-family:var(--num); font-size:11px}
+.fly-fold .hops .plane{font-size:10.5px; color:var(--quiet)}
+/* Пересадка — не рейс, а пауза между ними: своей строкой, отступом и без
+   номера. Иначе два рейса и полтора часа между ними читаются одним списком. */
+.fly-fold .hops .wait{color:var(--quiet); font-size:10.5px; padding-left:13px;
+  position:relative}
+.fly-fold .hops .wait::before{content:"⟳"; position:absolute; left:0; font-size:9px}
+.fly-fold .rows{margin:7px 0 0}
+.fly-fold .fine{margin-top:6px}
+/* Единственное яркое в блоке — то, чего у билета нет. Отмена без срока стоит
+   дороже всех остальных штрафов вместе, и красное здесь именно поэтому. */
+.fly-fold .nofree{color:var(--hot-ink); font-weight:700}
+/* Примечания — не про билет, а про планирование, поэтому лежат открытыми и
+   строкой, а не столбиком: три коротких мысли в ряд стоят одну высоту вместо
+   трёх. */
+.flights .mind{list-style:none; margin:8px 0 0; padding:0; display:flex;
+  flex-wrap:wrap; gap:2px 22px; font-size:11px; color:var(--quiet)}
+.flights .mind li{flex:1 1 300px; padding-left:14px; position:relative; line-height:1.35}
+.flights .mind li::before{content:"◆"; position:absolute; left:0; top:1px; font-size:8px;
+  color:var(--calm)}
 
 /* ── заметка про ночь с двумя бронями */
 .alert{border:1.5px solid var(--hot); background:var(--blush); border-radius:12px;
@@ -2730,12 +2991,24 @@ a.mk.bk{border-color:var(--hot)}
   .thread .move{margin-left:0; padding:9px 12px; border:1px dashed var(--rule);
     border-radius:8px; background:rgba(255,255,255,.34)}
   .thread .move .hd{flex-wrap:wrap; white-space:normal; font-size:12.5px; font-weight:600}
-  .thread .move .dt{display:inline; font-family:var(--num); font-weight:400;
-    color:var(--quiet); font-size:11px}
+  /* `width:auto` тут не косметика, а починка. Класс `.dt` носит ещё и клетка
+     с числом дня в разделе «по дням», а у неё `width:30px; flex:none` — и оно
+     доставало сюда: «9 января» ужималось до тридцати точек и печаталось
+     поверх «Токио → Киото». На компьютере этого не видно вовсе — там дата
+     спрятана, — поэтому дожило до телефона, где нитка только из этих строк и
+     состоит. Ширину задаём своей, чужую не трогаем: у клетки дня она нужна. */
+  .thread .move .dt{display:inline; width:auto; text-align:left;
+    font-family:var(--num); font-weight:400; color:var(--quiet); font-size:11px}
   .thread .move .ride{font-size:11px; padding-left:11px}
   .thread .paidrow{height:auto}
   .thread .paidbar{height:auto; background:none; border:0; margin-top:4px}
   .thread .paidbar span{position:static; white-space:normal; display:block}
+  /* Три карточки перелёта в 390 точек — это три полосы по слову в строке.
+     Столбиком: их всего три, и каждая закрытой держит две строки. */
+  .flights .row{grid-template-columns:1fr}
+  /* В стрелку надо попадать пальцем — 36 точек. На компьютере эти три точки
+     платит вся страница высотой, а мышью хватает и тридцати трёх. */
+  .fly-fold > summary{min-height:36px}
   .alert{display:block}
   .alert .facts{display:block; margin-top:8px}
   /* Справка на телефоне встаёт столбиком: у визы три части (что это, наше
@@ -4037,6 +4310,7 @@ def render(trip: dict, plan: list | None = None) -> str:
 <div class="sheet">
   {masthead(trip, stays, all_legs)}
   {thread(trip, all_legs)}
+  {flights_block(trip)}
   {alert_block(alerts)}
   {city_cards(all_legs, alerts, places, trip.get("cancelled", []))}
   {adder(trip, all_legs)}
