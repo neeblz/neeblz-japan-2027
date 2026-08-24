@@ -150,6 +150,41 @@
 
 Порог опущен с 1980 до 1860 по последнему измерению, как и всегда: сетка,
 сквозь которую свободно пролезает сто двадцать точек нового, ничего не ловит.
+
+**1976 с 24 августа, поздний вечер: справка встала столбиком.** Её слова: «до
+вылета, деньги и таксфри не нравится как разворачиваются. пусть стоят друг под
+другом». Ряд карточек стоил 71 точку, столбик стоит 151 — **плюс 80**, и это
+цена её решения, а не просчёт вёрстки. Торговаться тут не о чем: ряд
+раскрывался вбок и толкал соседей, а читаются три блока подряд.
+
+Обратно нашлось 21: перелив на фоне снял с раздела справки все линии, четыре
+свёртки над ней легли на одну плоскость вместо пяти горизонталей, а подпись
+свёртки вернулась на строку заголовка — в полную ширину она туда помещается, в
+треть экрана не помещалась.
+
+И ещё 58 вернула починка, а не вёрстка: помеченные брони внутри карточек стояли
+без плоскости — их правило съел лишний хвост комментария в `CSS`. Заливка,
+поля и скругления вернулись вместе с ним, и это те самые 58 точек. Проверка на
+это теперь есть (`.city .stay`, `getComputedStyle`), потому что пропавшая
+заливка не меняет ни разметки, ни высоты документа — увидеть её было нечем.
+
+Итого 1858 → 1976 при 1440: +80 её столбик, −21 перелив и снятые линии,
++58 вернувшиеся плоскости броней.
+
+Порог поднят до 1980 — по последнему измерению, как и всегда. Это 2.2 экрана
+при её потолке «2 экрана это ок» (1800); разговор про потолок — к ней, а не к
+сетке, и подгонять под него вёрстку значило бы прятать её же правку. Торговаться
+по-прежнему можно об одном и том же: четыре свёртки над справкой держат 174
+точки ради одной строки текста каждая, и два столбца вернули бы 88 — но это
+правка чужого раздела, и решает её Ни.
+
+**Контраст с этого дня меряется по кадру, а не по `background-color`.** Фон
+стал переливом, и «цвет фона под строкой» перестал существовать как одно
+число: страница снимается с погашенными буквами, и под каждой строкой читается
+настоящий пиксель — в пяти точках её прямоугольника, худший из. Строк в
+прогоне 203 закрытой, 662 развёрнутой, 176 на телефоне, 189 при тёмной
+настройке; число печатается рядом с итогом нарочно — проверка, которой нечего
+было мерить, снаружи неотличима от прошедшей.
 """
 
 import functools
@@ -158,9 +193,11 @@ import re
 import sys
 from datetime import date, datetime, timedelta, timezone
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+from io import BytesIO
 from pathlib import Path
 from threading import Thread
 
+from PIL import Image
 from playwright.sync_api import TimeoutError as PWTimeout, sync_playwright
 
 
@@ -183,7 +220,7 @@ HERE = Path(__file__).resolve().parent.parent
 PAGE = HERE / "dist" / "index.html"
 SHOTS = HERE.parent / "shots"
 DESK = {"width": 1440, "height": 900}
-LIMIT = 1860
+LIMIT = 1980
 MAIN, SMALL = 7.0, 4.5
 
 problems, notes = [], []
@@ -193,126 +230,257 @@ def want(ok: bool, said: str):
     (notes if ok else problems).append(("✓" if ok else "✗") + " " + said)
 
 
-# Пробегает каждый видимый кусок текста и считает его контраст к тому фону,
-# который под ним реально оказался, — включая прозрачность родителей. Считать
-# по переменным в `:root` бесполезно: `opacity:.6` на предке превращает
-# записанные 5.6:1 в 2.9:1, и переменная об этом не знает.
-CONTRAST = """
+# Пробегает каждый видимый кусок текста и отдаёт: чем он написан, где именно
+# лежат его строки и какой порог ему положен. Фон здесь **не считается** — его
+# читают пикселями (см. `Painted` ниже).
+#
+# Так было не всегда. До 24 августа фон брался из `background-color`: вверх по
+# предкам, пока не встретится непрозрачный. Пока страница набиралась ровными
+# заливками, это была честная арифметика — и ровно она запрещала градиент, о
+# чём в `build.py` даже стояло правило «градиента здесь не будет». Правило
+# защищало проверку, а не читателя: под текстом на переливе `background-color`
+# показывает ровную бумагу, то есть цвет, которого на экране нет.
+#
+# Прозрачность предков (`opacity:.6` превращает записанные 5.6:1 в 2.9:1)
+# по-прежнему собирается здесь: она множится на альфу самого текста, а на фон
+# ложится уже нарисованной — в кадре она видна как есть.
+INK = """
 (floors) => {
-  const lin = c => (c /= 255) <= 0.04045 ? c / 12.92 : Math.pow((c + .055) / 1.055, 2.4);
-  const lum = c => .2126 * lin(c[0]) + .7152 * lin(c[1]) + .0722 * lin(c[2]);
-  const ratio = (a, b) => { const [x, y] = [lum(a), lum(b)].sort((p, q) => q - p);
-                            return (x + .05) / (y + .05); };
   const rgba = s => { const m = (s || '').match(/[\\d.]+/g);
                       return m ? [+m[0], +m[1], +m[2], m.length > 3 ? +m[3] : 1] : null; };
-  const over = (f, b) => [0, 1, 2].map(i => f[i] * f[3] + b[i] * (1 - f[3]));
-
-  /* Фон под элементом: вверх по предкам, пока не встретится непрозрачный. */
-  function under(el) {
-    const stack = [];
-    for (let n = el; n; n = n.parentElement) {
-      const c = rgba(getComputedStyle(n).backgroundColor);
-      if (c && c[3] > 0) { stack.push(c); if (c[3] === 1) break; }
-    }
-    let bg = [255, 255, 255];
-    for (let i = stack.length - 1; i >= 0; i--) bg = over(stack[i], bg);
-    return bg;
-  }
-
-  const bad = [];
+  const out = [];
+  const sx = window.scrollX, sy = window.scrollY;
   for (const el of document.querySelectorAll('body *')) {
     if (el.closest('[aria-hidden="true"]')) continue;      /* оформление, не текст */
-    const own = [...el.childNodes]
-      .filter(n => n.nodeType === 3 && n.textContent.trim())
-      .map(n => n.textContent.trim()).join(' ');
-    if (!own) continue;
+    const own = [...el.childNodes].filter(n => n.nodeType === 3 && n.textContent.trim());
+    if (!own.length) continue;
     const r = el.getBoundingClientRect();
     if (!r.width || !r.height) continue;
     const s = getComputedStyle(el);
     if (s.visibility === 'hidden') continue;
+    /* Свёрнутое `details` браузер не рисует, но прямоугольники внутри него
+       по-прежнему отдаёт — от последней раскладки, когда оно было открыто.
+       Считать по ним пиксели значит мерить пустое место: координата уводит
+       за конец страницы, и «контраст» получается у того, что нарисовано там.
+       Ровно так первый прогон нашёл 1.01:1 у пункта списка, который в этом
+       состоянии просто не виден. Свёрнутое меряется своим проходом — тем, где
+       всё развёрнуто. */
+    if (el.closest('details:not([open])')) continue;
 
     let alpha = 1;
     for (let n = el; n && n !== document.body; n = n.parentElement)
       alpha *= parseFloat(getComputedStyle(n).opacity);
     const fg = rgba(s.color); fg[3] *= alpha;
-    const bg = under(el);
-    const c = ratio(over(fg, bg), bg);
+
+    /* Меряется не прямоугольник элемента, а строки его собственного текста:
+       абзац во всю ширину карточки — это не то же, что буквы в нём, а на
+       переливе разница между «где-то в блоке» и «под словом» и есть весь
+       вопрос. */
+    const rects = [];
+    for (const node of own) {
+      const range = document.createRange();
+      range.selectNodeContents(node);
+      for (const b of range.getClientRects()) {
+        if (b.width >= 2 && b.height >= 2)
+          rects.push({ x: b.left + sx, y: b.top + sy, w: b.width, h: b.height });
+      }
+    }
+    if (!rects.length) continue;
 
     const size = parseFloat(s.fontSize);
     const weight = parseInt(s.fontWeight, 10) || 400;
     /* Крупная надпись читается и на меньшем контрасте — это определение WCAG,
        а не поблажка себе: 24px или 18.66px жирным. */
     const large = size >= 24 || (size >= 18.66 && weight >= 700);
-    const floor = (large || size < 14) ? floors.small : floors.main;
-    if (c + 0.005 < floor)
-      bad.push({ what: own.slice(0, 30), cls: (el.className || el.tagName).toString().slice(0, 26),
-                 size, got: Math.round(c * 100) / 100, need: floor });
+    out.push({
+      what: own.map(n => n.textContent.trim()).join(' ').slice(0, 30),
+      cls: (el.className || el.tagName).toString().slice(0, 26),
+      size, fg, rects: rects.slice(0, 12),
+      need: (large || size < 14) ? floors.small : floors.main,
+    });
   }
-  return bad;
+  return out;
 }
 """
 
-
-# Цвет города рисует не только плоскости, но и линии: штриховку полосы
-# «оплачено с…» и полоску слева у города в разделе дней. Текста на них нет,
-# поэтому проверка выше их не видит вовсе — а пропасть они могут точно так же.
-# После перехода на пастель это перестало быть теорией: тон, годный под
-# заливку, на бумаге даёт 1.2:1, то есть линию, которой нет.
-#
-# Порог 3:1 — тот же, что WCAG требует от нетекстовых частей интерфейса.
-LINES = """
+# Цветные линии городов меряются так же — но у них своего текста нет, поэтому
+# точка берётся рядом с самой линией, а не под ней: под ней лежит уже смесь
+# линии с фоном, а спрашиваем мы, видна ли линия на том, что вокруг.
+LINE_BOXES = """
 () => {
-  const lin = c => (c /= 255) <= 0.04045 ? c / 12.92 : Math.pow((c + .055) / 1.055, 2.4);
-  const lum = c => .2126 * lin(c[0]) + .7152 * lin(c[1]) + .0722 * lin(c[2]);
-  const ratio = (a, b) => { const [x, y] = [lum(a), lum(b)].sort((p, q) => q - p);
-                            return (x + .05) / (y + .05); };
-  const rgba = s => { const m = (s || '').match(/[\\d.]+/g);
-                      return m ? [+m[0], +m[1], +m[2], m.length > 3 ? +m[3] : 1] : null; };
-  const over = (f, b) => [0, 1, 2].map(i => f[i] * f[3] + b[i] * (1 - f[3]));
-  function under(el) {
-    const stack = [];
-    for (let n = el; n; n = n.parentElement) {
-      const c = rgba(getComputedStyle(n).backgroundColor);
-      if (c && c[3] > 0) { stack.push(c); if (c[3] === 1) break; }
-    }
-    let bg = [255, 255, 255];
-    for (let i = stack.length - 1; i >= 0; i--) bg = over(stack[i], bg);
-    return bg;
-  }
+  const sx = window.scrollX, sy = window.scrollY;
   const seen = [];
-  const say = (what, paint, el) => {
-    const c = rgba(paint); if (!c) return;
-    const bg = under(el);
-    seen.push({ what, got: Math.round(ratio(over(c, bg), bg) * 100) / 100 });
+  const add = (what, paint, el) => {
+    const b = el.getBoundingClientRect();
+    if (!b.width || !b.height) return;
+    seen.push({ what, paint, x: b.left + sx, y: b.top + sy, w: b.width, h: b.height });
   };
   for (const el of document.querySelectorAll('.thread .paidbar'))
-    say('полоса «оплачено с…»', getComputedStyle(el).color, el);
+    add('полоса «оплачено с…»', getComputedStyle(el).color, el);
   for (const el of document.querySelectorAll('#days .run > summary .ct'))
-    say('полоска города «' + el.textContent.trim() + '»',
+    add('полоска города «' + el.textContent.trim() + '»',
         getComputedStyle(el).borderLeftColor, el);
   return seen;
 }
 """
 
 
-def lines(page, where: str, floor: float = 3.0):
-    """Линии, нарисованные цветом города, обязаны быть видны на своём фоне."""
-    seen = page.evaluate(LINES)
-    weak = [x for x in seen if x["got"] + 0.005 < floor]
-    want(seen and not weak,
+def _lin(c: float) -> float:
+    c /= 255
+    return c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4
+
+
+def _lum(rgb) -> float:
+    return .2126 * _lin(rgb[0]) + .7152 * _lin(rgb[1]) + .0722 * _lin(rgb[2])
+
+
+def _ratio(a, b) -> float:
+    x, y = sorted((_lum(a), _lum(b)), reverse=True)
+    return (x + .05) / (y + .05)
+
+
+def _over(fg, bg):
+    return [fg[i] * fg[3] + bg[i] * (1 - fg[3]) for i in range(3)]
+
+
+class Painted:
+    """Страница, снятая кадром с погашенными буквами.
+
+    Зачем: с 24 августа фон — перелив, а не заливка, и «цвет фона» под строкой
+    больше не существует как одно число. Единственный честный ответ на вопрос
+    «что под этим словом» — посмотреть, что нарисовано в этой точке.
+
+    Буквы гасятся `-webkit-text-fill-color`, а не `color`. Разница не
+    придирка: `color` на этой странице держит ещё и оформление —
+    штриховку «оплачено, но не нами», рамки квадратиков в легенде, полоску
+    города, — всё это написано через `currentColor`. Погасив `color`, мы сняли
+    бы вместе с буквами половину картинки и померили бы не ту страницу.
+    `-webkit-text-fill-color` трогает только заливку глифов; вёрстка, размеры и
+    все фоны остаются ровно теми же.
+
+    Кадр снимается в масштабе CSS (`scale="css"`), поэтому точка страницы и
+    точка картинки — одно и то же число, без деления на плотность экрана.
+    """
+
+    HIDE = "*,*::before,*::after{-webkit-text-fill-color:transparent !important}"
+
+    def __init__(self, page):
+        mask = page.add_style_tag(content=self.HIDE)
+        page.wait_for_timeout(60)
+        raw = page.screenshot(full_page=True, scale="css")
+        mask.evaluate("el => el.remove()")
+        page.wait_for_timeout(30)
+        self.img = Image.open(BytesIO(raw)).convert("RGB")
+        self.w, self.h = self.img.size
+        self.missed = 0
+
+    def _at(self, x: float, y: float):
+        x, y = int(round(x)), int(round(y))
+        if 0 <= x < self.w and 0 <= y < self.h:
+            return self.img.getpixel((x, y))
+        return None
+
+    @staticmethod
+    def _points(r):
+        """Пять точек строки: середина и четыре ближе к углам.
+
+        Одной точки мало именно из-за перелива: строка длиной в полстраницы
+        пересекает границу пятна, и середина скажет одно, а конец — другое.
+        Углы берутся не вплотную (15/85 %), чтобы не поймать соседнюю
+        плоскость через полпикселя сглаживания.
+        """
+        x, y, w, h = r["x"], r["y"], r["w"], r["h"]
+        return [(x + w * .5, y + h * .5),
+                (x + w * .15, y + h * .25), (x + w * .85, y + h * .25),
+                (x + w * .15, y + h * .75), (x + w * .85, y + h * .75)]
+
+    def worst(self, rects, fg):
+        """Худший контраст этого текста по всем его строкам и точкам."""
+        seen = None
+        for r in rects:
+            for x, y in self._points(r):
+                bg = self._at(x, y)
+                if bg is None:
+                    self.missed += 1
+                    continue
+                c = _ratio(_over(fg, bg), bg)
+                if seen is None or c < seen:
+                    seen = c
+        return seen
+
+    def beside(self, box):
+        """Фон рядом с линией: слева от неё и над ней."""
+        out = []
+        for x, y in ((box["x"] - 3, box["y"] + box["h"] / 2),
+                     (box["x"] + box["w"] / 2, box["y"] - 3)):
+            bg = self._at(x, y)
+            if bg is not None:
+                out.append(bg)
+        return out
+
+
+def _rgba(paint: str):
+    m = re.findall(r"[\d.]+", paint or "")
+    if not m:
+        return None
+    return [float(m[0]), float(m[1]), float(m[2]), float(m[3]) if len(m) > 3 else 1.0]
+
+
+def lines(page, where: str, floor: float = 3.0, painted=None):
+    """Линии, нарисованные цветом города, обязаны быть видны на своём фоне.
+
+    Цвет города рисует не только плоскости, но и линии: штриховку полосы
+    «оплачено с…» и полоску слева у города в разделе дней. Текста на них нет,
+    поэтому проверка контраста их не видит вовсе — а пропасть они могут точно
+    так же. После перехода на пастель это перестало быть теорией: тон, годный
+    под заливку, на бумаге даёт 1.2:1, то есть линию, которой нет.
+
+    Порог 3:1 — тот же, что WCAG требует от нетекстовых частей интерфейса.
+    Фон берётся из кадра, как и у текста: линия на переливе стоит не на той
+    бумаге, что записана в `--paper`.
+    """
+    painted = painted or Painted(page)
+    seen, weak = [], []
+    for box in page.evaluate(LINE_BOXES):
+        paint = _rgba(box["paint"])
+        if not paint:
+            continue
+        around = painted.beside(box)
+        if not around:
+            continue
+        got = min(_ratio(_over(paint, bg), bg) for bg in around)
+        seen.append(got)
+        if got + 0.005 < floor:
+            weak.append(f'{box["what"]} {got:.2f} < {floor}')
+    want(bool(seen) and not weak,
          f"цветные линии городов видны на своём фоне — {where} "
          f"(проверено: {len(seen)}, слабых: {len(weak)})"
-         + ("" if not weak else " — " + "; ".join(
-             f'{x["what"]} {x["got"]} < {floor}' for x in weak[:4])))
+         + ("" if not weak else " — " + "; ".join(weak[:4])))
 
 
-def contrast(page, where: str):
-    """Померить контраст и сказать, где именно он просел."""
-    bad = page.evaluate(CONTRAST, {"main": MAIN, "small": SMALL})
-    want(not bad, f"контраст держит {MAIN}/{SMALL} — {where} (просевших: {len(bad)})"
-         + ("" if not bad else " — " + "; ".join(
-             f'{x["cls"]} {x["size"]}px «{x["what"]}» {x["got"]} < {x["need"]}'
-             for x in bad[:5])))
+def contrast(page, where: str, painted=None):
+    """Померить контраст по настоящим пикселям и сказать, где именно просело.
+
+    Кадр снимается один раз на состояние страницы и обслуживает и текст, и
+    линии: снимать его дважды — это две разные страницы под одним именем.
+    """
+    painted = painted or Painted(page)
+    bad, seen = [], 0
+    for run in page.evaluate(INK, {"main": MAIN, "small": SMALL}):
+        got = painted.worst(run["rects"], run["fg"])
+        if got is None:
+            continue
+        seen += 1
+        if got + 0.005 < run["need"]:
+            bad.append(f'{run["cls"]} {run["size"]}px «{run["what"]}» '
+                       f'{got:.2f} < {run["need"]}')
+    # Сколько строк померено — часть ответа, а не украшение: проверка, которая
+    # промолчала, и проверка, которой нечего было мерить, снаружи одинаковы.
+    want(seen > 100 and not bad,
+         f"контраст держит {MAIN}/{SMALL} на переливе — {where} "
+         f"(строк: {seen}, просевших: {len(bad)})"
+         + ("" if not bad else " — " + "; ".join(bad[:5])))
+    return painted
 
 
 with sync_playwright() as pw:
@@ -476,8 +644,13 @@ with sync_playwright() as pw:
          f"перелёту срок отмены не выдуман: «{head[:60]}…»")
 
     # Примечания — про планирование, а не про билет, поэтому открыты.
+    #
+    # Одно, а не три: два Ни вычеркнула 24 августа вечером (про день с вещами
+    # перед вылетом и про отсутствие бесплатной отмены). Данные её, число здесь
+    # прибито к ним нарочно — примечание, потерявшееся молча, выглядит так же,
+    # как вычеркнутое ею.
     mind = page.locator(".flights .mind li")
-    want(mind.count() == 3 and mind.first.is_visible(),
+    want(mind.count() == 1 and mind.first.is_visible(),
          f"примечания к перелёту видны без раскрытия ({mind.count()})")
 
     # ── карточки городов: четыре в ряд, все одной высоты сверху
@@ -548,6 +721,28 @@ with sync_playwright() as pw:
         want(" ".join(kept.lower().split()) in outside, f'снаружи осталось «{kept}»')
     for hidden in ("Studio Single", "Kyobashi", "+81 3-3528-6505", "с 15:00"):
         want(" ".join(hidden.lower().split()) not in outside, f'под стрелку ушло «{hidden}»')
+
+    # ── помеченная бронь стоит на своей плоскости, а не голым текстом
+    #
+    # Ради чего проверка написана. 24 августа лишний `*/` в середине
+    # комментария в `CSS` закрыл его на три строки раньше, и браузер съел как
+    # испорченное всё до следующей скобки — ровно правило `.stay`. Брони внутри
+    # карточек остались без заливки, без полей и без скруглений, а стиль в
+    # файле при этом был на месте. Ни один тест этого не увидел: они читают
+    # разметку и высоту документа, а пропавшая заливка не меняет ни того, ни
+    # другого. Поэтому спрашивается `getComputedStyle` — то, что браузер
+    # действительно применил, а не то, что написано в файле.
+    plane = page.evaluate("""() => [...document.querySelectorAll('.city .stay')]
+        .map(el => { const s = getComputedStyle(el);
+                     return { bg: s.backgroundColor, pad: parseFloat(s.paddingLeft),
+                              round: parseFloat(s.borderTopLeftRadius) }; })""")
+    flat = [p for p in plane
+            if p["bg"] in ("rgba(0, 0, 0, 0)", "transparent")
+            or p["pad"] < 4 or p["round"] < 2]
+    want(len(plane) >= 2 and not flat,
+         f"помеченная бронь лежит на плоскости, а не голым текстом "
+         f"(броней: {len(plane)}, плоских: {len(flat)})"
+         + ("" if not flat else f" — {flat[:2]}"))
 
     # ── и открывается на месте, без перезагрузки
     was = page.evaluate("() => document.documentElement.scrollHeight")
@@ -805,17 +1000,68 @@ with sync_playwright() as pw:
     want("аэропорт" in head,
          f"и сказано, где теперь возвращают: «{head}»")
 
-    # Три оставшихся блока стоят закрытыми в один ряд, а не стопкой: с
-    # четвёртым блоком (деньги) стопка становится стеной под и без того
-    # длинной страницей, а ряд ещё и возвращает высоту. Меряется по верхним
-    # краям, а не по разметке: `display:grid` в стилях и три предмета на одной
-    # линии — разные утверждения, и разошлись они уже один раз (подпись во всю
-    # строку без переноса ужимала заголовок до нулевой ширины, и карточка
-    # такс-фри вырастала до 164 точек вместо 71).
-    tops = page.evaluate("""() => [...document.querySelectorAll('.ref .ref-row')]
-        .map(d => Math.round(d.getBoundingClientRect().top))""")
-    want(len(tops) == 3 and len(set(tops)) == 1,
-         f"три свёртки справки стоят закрытыми в один ряд (верх: {tops})")
+    # ── «до вылета»: совет впереди, две страховые — парой
+    #
+    # Обе вещи из её вечерних правок, и обе проверяются на экране, а не в
+    # разметке: «выделить» и «читаются парой» — это про то, что видно.
+    page.locator('[data-ref="documents"] > summary').click()
+    page.wait_for_timeout(180)
+    docs = page.evaluate("""() => {
+      const d = document.querySelector('[data-ref="documents"]');
+      const box = el => { const r = el.getBoundingClientRect();
+        return { top: Math.round(r.top), left: Math.round(r.left),
+                 right: Math.round(r.right), w: Math.round(r.width) }; };
+      const chips = [...d.querySelectorAll('.pair .only')].map(box);
+      const ahead = d.querySelector('.ahead');
+      return { chips, ahead: box(ahead), facts: box(d.querySelector('.facts')),
+               plane: getComputedStyle(ahead).backgroundColor,
+               first: d.querySelector('.facts > li').className };
+    }""")
+    # Совет — первый, во всю ширину списка и на своей плоскости. Плоскость
+    # спрашивается у браузера: «выделен» без заливки — это просто абзац.
+    want(docs["first"] == "fact ahead", f'совет стоит первым ({docs["first"]})')
+    want(docs["ahead"]["w"] >= docs["facts"]["w"] - 2,
+         f'совет занял всю ширину списка ({docs["ahead"]["w"]} из {docs["facts"]["w"]})')
+    want(docs["plane"] not in ("rgba(0, 0, 0, 0)", "transparent"),
+         f'совет лежит на плоскости, а не голым текстом ({docs["plane"]})')
+    # Пара: два чипа на одной строке и рядом, а не в разных концах. 60 точек —
+    # это «через запятую», а не «в разных колонках»: в общей сетке справки
+    # колонка шире трёхсот, и там они стояли в 330 точках друг от друга.
+    gap = (docs["chips"][1]["left"] - docs["chips"][0]["right"]) if len(docs["chips"]) == 2 else None
+    want(len(docs["chips"]) == 2
+         and docs["chips"][0]["top"] == docs["chips"][1]["top"]
+         and 0 <= gap <= 60,
+         f'GPI и TBC стоят парой на одной строке (зазор {gap}, верх: '
+         f'{[c["top"] for c in docs["chips"]]})')
+    page.locator('[data-ref="documents"] > summary').click()
+    page.wait_for_timeout(150)
+
+    # Три оставшихся блока стоят друг под другом — её правка 24 августа,
+    # вечером: «до вылета, деньги и таксфри не нравится как разворачиваются.
+    # пусть стоят друг под другом». До этого они стояли в ряд карточками, и
+    # здесь проверялось ровно обратное: три верхних края на одной линии.
+    #
+    # Меряется по краям, а не по разметке: `display:grid` в стилях и три
+    # предмета в столбик — разные утверждения, и разошлись они уже один раз
+    # (подпись во всю строку без переноса ужимала заголовок до нулевой ширины,
+    # и карточка такс-фри вырастала до 164 точек вместо 71). Каждый следующий
+    # блок обязан начинаться ниже конца предыдущего: столбик — это не «сдвинуты
+    # по вертикали», а «не перекрываются».
+    box = page.evaluate("""() => [...document.querySelectorAll('.ref .ref-row')]
+        .map(d => { const r = d.getBoundingClientRect();
+                    return { top: Math.round(r.top), bottom: Math.round(r.bottom),
+                             left: Math.round(r.left), w: Math.round(r.width) }; })""")
+    stacked = (len(box) == 3
+               and all(box[i + 1]["top"] >= box[i]["bottom"] for i in range(2))
+               and len({b["left"] for b in box}) == 1)
+    want(stacked, "три свёртки справки стоят друг под другом "
+         f'(верх: {[b["top"] for b in box]}, низ: {[b["bottom"] for b in box]})')
+    # И каждая — во всю ширину раздела: столбик из карточек в треть страницы
+    # был бы уже не столбиком, а лесенкой.
+    ref_w = page.evaluate(
+        "() => Math.round(document.querySelector('.ref').getBoundingClientRect().width)")
+    want(box and all(b["w"] >= ref_w - 2 for b in box),
+         f'свёртки заняли всю ширину раздела ({[b["w"] for b in box]} при {ref_w})')
     tall = page.evaluate("""() => [...document.querySelectorAll('.ref .ref-row')]
         .map(d => Math.round(d.getBoundingClientRect().height))""")
     want(max(tall) <= 90, f"и ни одна не разрослась переносом заголовка ({tall})")
@@ -834,7 +1080,11 @@ with sync_playwright() as pw:
         page.wait_for_timeout(150)
         for item in block["items"]:
             head = " ".join(item["text"].split())[:42]
-            row = box.locator(".facts li", has_text=head)
+            # `:not(.pack)` — потому что группа лежит своим списком внутри
+            # общего, и её обёртка содержит тот же текст, что и сам пункт.
+            # Считать её вторым показом значило бы ловить вложенность вместо
+            # двойника: на экране пункт по-прежнему один.
+            row = box.locator(".facts li:not(.pack)", has_text=head)
             want(row.count() == 1, f'пункт на странице один: «{head}…» ({row.count()})')
             if row.count() != 1:
                 continue
@@ -877,8 +1127,8 @@ with sync_playwright() as pw:
     contrast(page, "1440, свёрнуто")
     page.evaluate("() => document.querySelectorAll('details').forEach(d => d.open = true)")
     page.wait_for_timeout(150)
-    contrast(page, "1440, всё развёрнуто")
-    lines(page, "1440, всё развёрнуто")
+    shot = contrast(page, "1440, всё развёрнуто")
+    lines(page, "1440, всё развёрнуто", painted=shot)
     page.evaluate("() => document.querySelectorAll('details').forEach(d => d.open = false)")
 
     SHOTS.mkdir(exist_ok=True)
@@ -1008,18 +1258,27 @@ with sync_playwright() as pw:
     night.goto(PAGE.as_uri(), wait_until="load")
     night.wait_for_timeout(150)
     paint = night.evaluate("""() => {
-      const s = getComputedStyle(document.body);
-      return { bg: s.backgroundColor, ink: s.color,
-               scheme: getComputedStyle(document.documentElement).colorScheme };
+      const root = getComputedStyle(document.documentElement);
+      return { bg: root.backgroundColor, spots: root.backgroundImage,
+               body: getComputedStyle(document.body).backgroundColor,
+               ink: getComputedStyle(document.body).color, scheme: root.colorScheme };
     }""")
     # Цвет прибит, а не проверен на «достаточно светлый»: правило здесь не
-    # про яркость, а про то, что тёмная тема не включилась сама. #e8eef7 с
-    # 24 августа — прежний тёплый бежевый #f2eee7 сменила холодная голубая
-    # бумага по её словам «фон нужен холоднее сильно».
-    want(paint["bg"] == "rgb(232, 238, 247)",
+    # про яркость, а про то, что тёмная тема не включилась сама.
+    #
+    # Спрашивается он у `html`, а не у `body`: с 24 августа бумага лежит на
+    # корне (там же, откуда берётся область для процентов перелива), а `body`
+    # обязан быть прозрачным — иначе его заливка во всю страницу закрыла бы
+    # перелив целиком. #faf5f9 — её «менее синим, более белым» вместо
+    # холодного #e8eef7.
+    want(paint["bg"] == "rgb(250, 245, 249)",
          f'фон остаётся светлым при тёмной настройке устройства ({paint["bg"]})')
-    want("light" in paint["scheme"],
-         f'браузеру сказано рисовать светло ({paint["scheme"]})')
+    want(paint["body"] == "rgba(0, 0, 0, 0)",
+         f'бумага не закрыта сплошной заливкой поверх перелива ({paint["body"]})')
+    # И сам перелив на месте: четыре пятна, а не одно «none». Проверяется
+    # здесь, потому что тёмная настройка — это ещё и другой набор правил.
+    want(paint["spots"].count("radial-gradient") == 4,
+         f'перелив на месте, пятен четыре ({paint["spots"][:60]}…)')
     contrast(night, "тёмная настройка устройства")
 
     # ── забытая запись-место: считается в деньгах и обязана быть видна

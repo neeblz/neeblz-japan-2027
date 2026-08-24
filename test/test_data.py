@@ -1379,13 +1379,29 @@ class TheReferenceCannotPassAGuessOffAsAFact(unittest.TestCase):
     # Классы читаются из разметки, а не угадываются по тексту: `li.fact`,
     # `li.unsure`, `li.think` — это и есть три вида происхождения, и тест
     # обязан ловить именно подмену вида, а не пропажу слова.
-    ROW = re.compile(r'<li class="(fact|unsure|think)">(.*?)</li>', re.S)
+    #
+    # Классов у пункта с 24 августа бывает больше одного: к происхождению
+    # добавились пометки веса («совет», «пара страховых»). Происхождение при
+    # этом обязано остаться **первым** — читается именно оно, а не то, что
+    # приписано следом.
+    ROW = re.compile(r'<li class="(fact|unsure|think)[^"]*">(.*?)</li>', re.S)
+    # Пометка стоит перед самим текстом пункта, и в голом тексте она слипается
+    # с ним («не подтвержденоПодача 9:30…»). Снимаем её здесь, чтобы пункт
+    # искался с начала строки: пункты в одно слово («GPI», «TBC») вхождением
+    # находятся и в чужих строках.
+    MARKS = ("не подтверждено", "наше соображение", "стоит сделать заранее")
 
     def rows(self, html=None):
-        return {
-            re.sub(r"<[^>]+>", "", body): kind
-            for kind, body in self.ROW.findall(html if html is not None else self.html)
-        }
+        found = self.ROW.findall(html if html is not None else self.html)
+        out = {}
+        for kind, body in found:
+            text = re.sub(r"<[^>]+>", "", body)
+            for mark in self.MARKS:
+                if text.startswith(mark):
+                    text = text[len(mark):]
+                    break
+            out[text] = kind
+        return out
 
     def test_the_real_reference_counts_up(self):
         said = "\n".join(check_reference(copy.deepcopy(REF)))
@@ -1396,18 +1412,29 @@ class TheReferenceCannotPassAGuessOffAsAFact(unittest.TestCase):
         # убрать, только актуальная» ужало визу до 4 пунктов, растило «до
         # вылета» и такс-фри и добавило четвёртый блок про деньги. 16 пунктов
         # стало 24.
+        #
+        # Вечером 24 августа «до вылета» переписан её правкой: «страховки без
+        # подробностей оставь ссылки». Шесть пунктов стали четырьмя — Visit
+        # Japan Web, подпись про страховку и две страховые, — а условия,
+        # лимиты и цены ушли вместе с непроверенным пунктом про цену и с нашим
+        # соображением. Отсюда «0 нет, 0 от нас» и 22 пункта вместо 24.
         self.assertIn("справка, виза: 2 подтверждено, 2 нет, 0 от нас", said)
-        self.assertIn("справка, до вылета: 4 подтверждено, 1 нет, 1 от нас", said)
+        self.assertIn("справка, до вылета: 4 подтверждено, 0 нет, 0 от нас", said)
         self.assertIn("5 подтверждено, 1 нет, 0 от нас", said)          # такс-фри
         self.assertIn("справка, деньги: 6 подтверждено, 1 нет, 1 от нас", said)
-        self.assertIn("24 пунктов", said)
+        self.assertIn("22 пунктов", said)
 
     def test_every_item_is_drawn_as_what_it_is(self):
         """Сверка экрана с данными: у каждого пункта свой вид, и он тот самый."""
         drawn = self.rows()
         for block in REF["blocks"]:
             for item in block["items"]:
-                found = [k for text, k in drawn.items() if item["text"] in text]
+                # Пункт ищется по началу строки, а не по вхождению куда-нибудь
+                # внутрь: с 24 августа есть пункты в одно слово («GPI», «TBC»),
+                # и «TBC» вхождением находится ещё и в пункте про комиссию
+                # своего банка — то есть один пункт «нарисован дважды» там,
+                # где на экране всё верно.
+                found = [k for text, k in drawn.items() if text.startswith(item["text"])]
                 self.assertEqual(len(found), 1,
                                  f'пункт нарисован один раз: «{item["text"][:40]}…»')
                 want = ("think" if item.get("mine") is True
@@ -1423,11 +1450,13 @@ class TheReferenceCannotPassAGuessOffAsAFact(unittest.TestCase):
         """
         unsure = [i for b in REF["blocks"] for i in b["items"]
                   if i.get("verified") is False]
-        # Пять с 24 августа, и они разъехались по всем четырём блокам: часы
-        # приёма и срок рассмотрения (виза), цена страховки, комиссия своего
-        # банка (деньги), места киосков такс-фри. Раньше все три сидели в визе.
-        self.assertEqual(len(unsure), 5, "непроверенных пять, и они не только про визу")
-        drawn = re.findall(r'<li class="unsure">(.*?)</li>', self.html, re.S)
+        # Четыре, и они разъехались по трём блокам: часы приёма и срок
+        # рассмотрения (виза), комиссия своего банка (деньги), места киосков
+        # такс-фри. Раньше все сидели в визе; пятым был непроверенный пункт про
+        # цену страховки — он ушёл вечером 24 августа вместе с подробностями
+        # страховок, которые Ни вычеркнула.
+        self.assertEqual(len(unsure), 4, "непроверенных четыре, и они не только про визу")
+        drawn = re.findall(r'<li class="unsure[^"]*">(.*?)</li>', self.html, re.S)
         self.assertEqual(len(drawn), len(unsure))
         for item in unsure:
             row = [x for x in drawn if item["text"] in x]
@@ -1454,6 +1483,69 @@ class TheReferenceCannotPassAGuessOffAsAFact(unittest.TestCase):
         outside = self.html[:self.html.index('<details class="visa-more"')]
         self.assertIn(warn["text"], outside, "соображение видно, не открывая")
         self.assertIn("наше соображение", outside)
+
+    # ── вес пункта: совет и пара (её правки 24 августа, вечер)
+
+    def test_the_thing_to_do_beforehand_is_drawn_as_advice(self):
+        """«Наоборот выделить. и написать что лучше сделать» — про Visit Japan Web.
+
+        Совет отличается от строки списка словом и своей плоскостью, но
+        происхождение остаётся первым классом: выделенный пункт не перестаёт
+        быть подтверждённым фактом, и подменить одно другим нельзя.
+        """
+        docs = [b for b in REF["blocks"] if b["id"] == "documents"][0]
+        lead = [i for i in docs["items"] if i.get("lead") is True]
+        self.assertEqual(len(lead), 1, "совет в блоке один, иначе он ничего не выделяет")
+        row = re.search(r'<li class="fact ahead">(.*?)</li>', self.html, re.S)
+        self.assertTrue(row, "совет нарисован советом, происхождение — первым классом")
+        self.assertIn("стоит сделать заранее", row.group(1))
+        self.assertIn(lead[0]["text"], row.group(1))
+        # И он стоит первым в блоке: совет после списка — это уже сноска.
+        body = re.search(r'data-ref="documents".*?<ul class="facts">(.*?)</ul>',
+                         self.html, re.S).group(1)
+        self.assertTrue(body.startswith('<li class="fact ahead">'),
+                        "совет стоит первым, а не в общем ряду")
+
+    def test_the_two_insurers_read_as_a_pair(self):
+        """«Страховки без подробностей оставь ссылки» — подпись и две ссылки.
+
+        Пара держится не линией вокруг, а разметкой: три пункта группы лежат в
+        своём списке внутри общего. Это не украшение — в общей сетке справки
+        колонки шире трёхсот точек, и две ссылки, попав каждая в свою,
+        оказываются в разных концах строки, то есть снова двумя отдельными
+        фактами.
+        """
+        docs = [b for b in REF["blocks"] if b["id"] == "documents"][0]
+        grp = [i for i in docs["items"] if i.get("group") == "страховки"]
+        self.assertEqual(len(grp), 3, "подпись и две страховые")
+        body = re.search(r'data-ref="documents".*?<ul class="facts">(.*?)</ul>\s*</div>',
+                         self.html, re.S).group(1)
+        pair = re.search(r'<li class="pack"><ul class="pair">(.*?)</ul></li>', body, re.S)
+        self.assertTrue(pair, "группа лежит своим списком, а не вразброс по общему")
+        self.assertEqual(re.findall(r'<li class="([^"]+)"', pair.group(1)), [
+            "fact grp grp-head",        # подпись: 16 дней, 4–19 января
+            "fact grp only",            # GPI
+            "fact grp grp-tail only",   # TBC
+        ], "три пункта группы стоят подряд, а границы у неё те самые")
+        # И совет остаётся снаружи пары: он к страховкам отношения не имеет.
+        self.assertNotIn("ahead", pair.group(1))
+
+    def test_an_item_that_is_only_a_name_prints_that_name_once(self):
+        """У GPI и TBC текст пункта равен подписи ссылки — это нарочно.
+
+        Подробностей она не хочет, весь пункт — имя страховой. Подпись плюс
+        ссылка напечатали бы его дважды: «TBC TBC».
+        """
+        one = ref_item({"text": "TBC", "verified": True,
+                        "link": "https://example.org/travel", "link_label": "TBC"})
+        self.assertEqual(re.sub(r"<[^>]+>", "", one), "TBC", "имя написано один раз")
+        self.assertIn('class="fact only"', one)
+        # А если подпись ссылки говорит не то же самое, что пункт, — печатается
+        # и то и другое: правило про совпадение, а не про «текст можно съесть».
+        two = ref_item({"text": "Страховка на поездку — 16 дней.", "verified": True,
+                        "link": "https://example.org/travel", "link_label": "GPI"})
+        self.assertIn("Страховка на поездку", re.sub(r"<[^>]+>", "", two))
+        self.assertIn(">GPI</a>", two)
 
     # ── а теперь — умеет ли всё это краснеть
     #
@@ -1540,16 +1632,20 @@ class TheReferenceCannotPassAGuessOffAsAFact(unittest.TestCase):
 
         Список прибит целиком, а не проверяется на «похоже на ссылку»: смысл
         правила в том, что новый адрес не может появиться тихо. 24 августа их
-        стало пять — три страховые (её «дай ссылки на страховые») и посольство
+        стало шесть — три страховые (её «дай ссылки на страховые») и посольство
         («сайт всё равно дай»), к прежнему Visit Japan Web.
+
+        Вечером того же дня осталось пять: Aldagi Ни вычеркнула сама, а Visit
+        Japan Web переехал наверх блока — он теперь совет, а не строка списка,
+        и стоит перед страховками. Порядок здесь не украшение: он же и есть
+        порядок чтения на экране.
         """
         links = re.findall(r'<a class="btn" href="([^"]+)"', self.html)
         self.assertEqual(links, [
             "https://www.ge.emb-japan.go.jp/itpr_en/visa.html",
+            "https://services.digital.go.jp/en/visit-japan-web/",
             "https://www.gpih.ge/ინდივიდუალური/სამოგზაურო-დაზღვევა/",
             "https://tbcinsurance.ge/ge/personal/travel/travel-insurance",
-            "https://aldagi.ge/individual/travel-insurance",
-            "https://services.digital.go.jp/en/visit-japan-web/",
             "https://www.sevenbank.co.jp/intlcard/index2.html",
         ])
         self.assertIn('rel="noreferrer noopener"', self.html)
