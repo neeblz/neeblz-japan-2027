@@ -46,13 +46,15 @@ class DataHolds(unittest.TestCase):
 
     def test_totals_are_the_expected_numbers(self):
         stays = REAL["stays"]
-        # 290 675, а не 297 912: 23 августа Ни прислала новое подтверждение
-        # по lyf Ginza — тариф ASR Advanced Purchase, ¥50 205 вместо ¥57 442
-        # (номер 41 492 + налог 4 564 + сбор 4 149). Число живёт здесь, чтобы
-        # тихая правка её денег краснела.
-        self.assertEqual(sum(s["total_jpy"] for s in stays), 290_675)
-        self.assertEqual(sum(s["payment"]["paid_jpy"] for s in stays), 12_010)
-        self.assertEqual(sum(s["payment"]["upcoming_jpy"] for s in stays), 109_790)
+        # 292 805, а не 290 675: 10 сентября Ни прислала новое подтверждение
+        # по OMO3 Асакуса — комната City View YOSE Twin, ¥123 930 вместо
+        # ¥121 800, и оплачена картой целиком, а не частью.
+        # (До этого было 290 675 вместо 297 912: 23 августа так же сменился
+        # тариф lyf Ginza — ¥50 205 вместо ¥57 442.)
+        # Числа живут здесь, чтобы тихая правка её денег краснела.
+        self.assertEqual(sum(s["total_jpy"] for s in stays), 292_805)
+        self.assertEqual(sum(s["payment"]["paid_jpy"] for s in stays), 123_930)
+        self.assertEqual(sum(s["payment"]["upcoming_jpy"] for s in stays), 0)
         # Оплаченных ночей 15, прожитых 14: ночь 14-го оплачена дважды.
         # Разница между этими числами и есть цена наложения.
         self.assertEqual(sum(s["nights"] for s in stays), 15)
@@ -261,17 +263,21 @@ class PageShowsIt(unittest.TestCase):
         # Разряды разделены узким неразрывным пробелом: сравниваем по цифрам,
         # а не по тому, каким именно пробелом их развели.
         #
-        # 290675, а не 297912: итог сменился 23 августа вместе с новым
-        # подтверждением lyf Ginza. Проверка этого не заметила и осталась
-        # зелёной — «297 912» до сих пор стоит примером в пояснении внутри
-        # `money.js`, и поиск по всей странице находил комментарий к коду
-        # вместо суммы под чеком. Поэтому ищем теперь в самом чеке.
+        # Итог берём из данных, а не вписываем числом: он менялся уже трижды
+        # (297 912 → 290 675 → 292 805), и каждый раз вписанное число делало
+        # проверку либо красной на верной странице, либо зелёной на старой.
+        # Отдельно сторожим прежние итоги — «290 675» до сих пор стоит примером
+        # в пояснении внутри `money.js`, поэтому ищем именно в самом чеке.
         check = re.search(r'<div class="total" id="check">(.*?)<div class="bar"',
                           self.html, re.S).group(1)
-        self.assertIn("290675", re.sub(r"\s+", "", check), "итог под чеком")
-        self.assertNotIn("297912", re.sub(r"\s+", "", check), "старый итог под чеком")
+        total = str(sum(s["total_jpy"] for s in REAL["stays"]))
+        self.assertIn(total, re.sub(r"\s+", "", check), "итог под чеком")
+        for stale in ("297912", "290675"):
+            if stale != total:
+                self.assertNotIn(stale, re.sub(r"\s+", "", check),
+                                 f"старый итог {stale} под чеком")
         digits = re.sub(r"\s+", "", self.html)
-        for amount in ("290675", "27160", "121800"):
+        for amount in [total] + [str(s["total_jpy"]) for s in REAL["stays"]]:
             self.assertIn(amount, digits, amount)
 
     def test_every_stay_has_phone_map_and_cancellation(self):
@@ -622,8 +628,8 @@ class WhatCostsMoneyIsOnTop(unittest.TestCase):
         self.assertIn(earliest["cancel"]["free_until"], summary,
                       "наверху обязан стоять самый ранний срок")
         # День и месяц разведены неразрывным пробелом — сравниваем по словам.
-        self.assertIn("18 декабря 2026", " ".join(summary.split()),
-                      "18 декабря — OMO5 Киото; дата прибита, чтобы подмена краснела")
+        self.assertIn("4 декабря 2026", " ".join(summary.split()),
+                      "4 декабря — OMO3 Асакуса; дата прибита, чтобы подмена краснела")
         # Остальные никуда не делись — они под стрелкой, а не выкинуты.
         for s in REAL["stays"]:
             self.assertIn(s["cancel"]["free_until"], head.group(1), s["name"])
@@ -647,7 +653,7 @@ class WhatCostsMoneyIsOnTop(unittest.TestCase):
     def test_a_deadline_that_is_not_the_earliest_on_top_is_caught(self):
         """Сборка обязана назвать ближайший срок вслух — иначе подмену не видно."""
         said = "\n".join(check(copy.deepcopy(REAL)))
-        self.assertIn("ближайший срок отмены: 2026-12-18", said)
+        self.assertIn("ближайший срок отмены: 2026-12-04", said)
 
     # ── переезды
 
@@ -791,7 +797,8 @@ class TheFlightIsShownOnceAndCountedOnce(unittest.TestCase):
                          "перелёт не бронь отеля и в счёт жилья не входит")
         check = re.search(r'<div class="total" id="check">(.*?)<div class="bar"',
                           self.html, re.S).group(1)
-        self.assertIn("290675", re.sub(r"\s+", "", check), "итог под чеком не поехал")
+        self.assertIn(str(housing["jpy"]), re.sub(r"\s+", "", check),
+                      "итог под чеком не поехал")
 
     def test_not_one_digit_of_the_ticket_is_printed_by_the_build(self):
         """Второе такое же число рядом с первым читается как вторая трата.
