@@ -261,16 +261,26 @@ def check(trip: dict, plan: list | None = None) -> list[str]:
 
     # 5. Сроки отмены — разбираемые даты, и ни один не в прошлом относительно
     #    сборки без пометки. Молча просроченный срок — худший вид молчания.
+    #    Срок может отсутствовать вовсе: 10 сентября Ни велела убрать условия
+    #    отмены OMO3 — «она мне больше не нужна». Бронь без срока не молчит по
+    #    ошибке, она названа вслух отдельной строкой.
     today = date.today()
-    for s in stays:
+    dated = [s for s in stays if s.get("cancel")]
+    for s in dated:
         cutoff = datetime.fromisoformat(s["cancel"]["free_until"])
         if cutoff.date() < today:
             said.append(f'⚠ {s["name"]}: бесплатная отмена уже прошла ({cutoff.date()})')
+    for s in stays:
+        if not s.get("cancel"):
+            said.append(f'срок отмены не показываем: {s["name"]} — так решила Ни')
     # Ближайший срок называется вслух при каждой сборке: он стоит в шапке
     # страницы, и если шапка вдруг покажет не тот — это будет видно здесь же.
-    soonest = min(stays, key=lambda s: s["cancel"]["free_until"])
-    said.append(f'ближайший срок отмены: {soonest["cancel"]["free_until"][:10]} — '
-                f'{soonest["name"]}, {yen(soonest["total_jpy"])}')
+    if dated:
+        soonest = min(dated, key=lambda s: s["cancel"]["free_until"])
+        said.append(f'ближайший срок отмены: {soonest["cancel"]["free_until"][:10]} — '
+                    f'{soonest["name"]}, {yen(soonest["total_jpy"])}')
+    else:
+        said.append("сроков отмены на странице нет ни у одной брони")
 
     # 6. Место из вишлиста висит на брони. Опечатка в «stay» — это место,
     #    привязанное к городу, которого в поездке нет.
@@ -695,7 +705,10 @@ def deadlines(stays: list) -> str:
     гасит его и раскрывает список сам, чтобы живые сроки не оказались спрятаны
     за мёртвым.
     """
-    order = sorted(stays, key=lambda s: s["cancel"]["free_until"])
+    # Бронь без `cancel` в этот список не попадает вовсе: Ни убрала условия
+    # отмены OMO3, и «срока нет» не должно читаться как «срок сегодня».
+    order = sorted((s for s in stays if s.get("cancel")),
+                   key=lambda s: s["cancel"]["free_until"])
     if not order:
         return ""
 
@@ -1163,15 +1176,18 @@ def city_cards(all_legs: list, alerts: list, cancelled: list) -> str:
                     f'<span>{e(s["arriving"]["why"])} · ночь {short(s["checkin"]["date"])} '
                     f'оплачена и остаётся пустой</span></p>'
                 )
-            brons.append(f"""
-<div class="{klass}" id="{e(s["id"])}">
-  {label}
-  {arriving}
+            cancel_block = ""
+            if s.get("cancel"):
+                cancel_block = f"""
   <p class="cancel" data-deadline="{e(s["cancel"]["free_until"])}">
     <span class="k">бесплатная отмена</span>
     <b>до {day_month(s["cancel"]["free_until"])} {d(s["cancel"]["free_until"]).year}, {e(s["cancel"]["free_until"][11:16])} JST</b>
     <span class="t">{e(s["cancel"]["note"])}</span>
-  </p>
+  </p>"""
+            brons.append(f"""
+<div class="{klass}" id="{e(s["id"])}">
+  {label}
+  {arriving}{cancel_block}
 </div>""")
 
         pay = leg["stays"][0]["payment"]
@@ -4640,6 +4656,13 @@ DAYS_JS = """
 # ─────────────────────────────────────────── страница
 
 def render(trip: dict, plan: list | None = None) -> str:
+    # Курс берётся из тех же данных, что и всё остальное на странице.
+    # Раньше его подставлял только `main()` через `load_fx`, а `render`
+    # молча пользовался запасным числом в модуле. Пока запасное совпадало с
+    # данными, разницы не было видно — и проверки всё это время сверяли
+    # страницу с курсом, которого в данных уже не было. 10 сентября они
+    # разошлись, и дыра открылась.
+    load_fx(trip)
     plan = load_plan() if plan is None else plan
     stays = sorted(trip["stays"], key=lambda s: (s["checkin"]["date"], s["checkout"]["date"]))
     alerts = trip.get("alerts", [])

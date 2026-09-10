@@ -31,6 +31,18 @@ from build import (  # noqa: E402
 REAL = json.loads(DATA.read_text(encoding="utf-8"))
 REF = json.loads(REF_DATA.read_text(encoding="utf-8"))
 
+# Брони, у которых срок отмены показывается. У OMO3 его нет с 10 сентября:
+# Ни велела убрать — «она мне больше не нужна». Считать сроки по всем броням
+# после этого нельзя, иначе проверки требуют того, чего она сама запретила.
+DATED = [s for s in REAL["stays"] if s.get("cancel")]
+
+# Дата курса подписывается по-человечески. Проверять её вписанным «23 августа»
+# нельзя: курс обязан меняться, и прибитый месяц делал бы красным как раз
+# исправный пересчёт. Берём то же преобразование, что и сборка.
+def human_fx_date() -> str:
+    build.load_fx(REAL)
+    return build.fx_human_date()
+
 
 def broken(**_unused):
     return copy.deepcopy(REAL)
@@ -285,12 +297,33 @@ class PageShowsIt(unittest.TestCase):
             self.assertIn(f'id="{s["id"]}"', self.html)
             self.assertIn(s["phone"], self.html)
             self.assertIn("maps/search", self.html)
-            self.assertIn(s["cancel"]["free_until"], self.html)
+            if s.get("cancel"):
+                self.assertIn(s["cancel"]["free_until"], self.html)
+
+    def test_a_stay_without_a_deadline_shows_none_at_all(self):
+        """Ни убрала условия отмены OMO3 — их не должно быть нигде на странице.
+
+        Проверка держит именно отсутствие: «срока нет» легко превращается
+        обратно в срок при следующей правке сборки, и заметить это будет
+        некому — пустое место молчит одинаково и когда так задумано, и когда
+        сломалось.
+        """
+        quiet = [s for s in REAL["stays"] if not s.get("cancel")]
+        self.assertTrue(quiet, "хотя бы одна бронь без срока — это её решение")
+        for s in quiet:
+            card = re.search(rf'<div class="[^"]*" id="{s["id"]}">(.*?)</div>',
+                             self.html, re.S)
+            self.assertIsNotNone(card, s["name"])
+            self.assertNotIn('class="cancel"', card.group(1), s["name"])
+            self.assertNotIn(s["id"], re.search(
+                r'<details class="deadlines">(.*?)</details>', self.html, re.S).group(1))
+        # И прежний срок OMO3 не оставил следа ни в шапке, ни в карточке.
+        self.assertNotIn("2026-12-04", self.html, "убранный срок вернулся")
 
     def test_deadlines_are_labelled_jst(self):
         """Каждый срок отмены назван по японскому времени, а не «до 23-го»."""
         cutoffs = re.findall(r'<p class="cancel"[^>]*>(.*?)</p>', self.html, re.S)
-        self.assertEqual(len(cutoffs), len(REAL["stays"]))
+        self.assertEqual(len(cutoffs), len(DATED))
         for block in cutoffs:
             self.assertIn("JST", block)
 
@@ -394,7 +427,8 @@ class PageShowsIt(unittest.TestCase):
         inside = " ".join(folds)
         for s in REAL["stays"]:
             self.assertIn(f'id="{s["id"]}"', inside, s["name"])
-            self.assertIn(s["cancel"]["free_until"], inside, s["name"])
+            if s.get("cancel"):
+                self.assertIn(s["cancel"]["free_until"], inside, s["name"])
             self.assertIn(s["phone"], inside, s["name"])
         # И снаружи остаётся то, ради чего карточка стоит на странице.
         for kept in ("class=\"name\"", "class=\"hotel\"", "class=\"span\"", "class=\"price\""):
@@ -559,8 +593,10 @@ class SheWritesHereHerself(unittest.TestCase):
         self.assertEqual(housing["usd"], sum(shown),
                          "доллар итога — сумма показанных городских долларов")
         self.assertEqual(self.island["fx"]["usd_per_jpy"], REAL["fx"]["usd_per_jpy"])
-        self.assertEqual(self.island["fx"]["human"], "23 августа 2026",
+        self.assertEqual(self.island["fx"]["human"], human_fx_date(),
                          "курс подписан человеческой датой, а не ГГГГ-ММ-ДД")
+        self.assertNotIn(REAL["fx"]["as_of"], self.island["fx"]["human"],
+                         "ГГГГ-ММ-ДД под курсом читается как техническая строка")
 
     def test_two_buttons_but_the_form_still_knows_three_kinds(self):
         """Кнопок две, видов записи по-прежнему три.
@@ -624,17 +660,17 @@ class WhatCostsMoneyIsOnTop(unittest.TestCase):
         head = re.search(r'<details class="deadlines">(.*?)</details>', self.html, re.S)
         self.assertIsNotNone(head, "блока сроков в шапке нет")
         summary = re.search(r"<summary>(.*?)</summary>", head.group(1), re.S).group(1)
-        earliest = min(REAL["stays"], key=lambda s: s["cancel"]["free_until"])
+        earliest = min(DATED, key=lambda s: s["cancel"]["free_until"])
         self.assertIn(earliest["cancel"]["free_until"], summary,
                       "наверху обязан стоять самый ранний срок")
         # День и месяц разведены неразрывным пробелом — сравниваем по словам.
-        self.assertIn("4 декабря 2026", " ".join(summary.split()),
-                      "4 декабря — OMO3 Асакуса; дата прибита, чтобы подмена краснела")
+        self.assertIn("18 декабря 2026", " ".join(summary.split()),
+                      "18 декабря — OMO5 Киото; дата прибита, чтобы подмена краснела")
         # Остальные никуда не делись — они под стрелкой, а не выкинуты.
-        for s in REAL["stays"]:
+        for s in DATED:
             self.assertIn(s["cancel"]["free_until"], head.group(1), s["name"])
         self.assertEqual(head.group(1).count("<li data-deadline="),
-                         len(REAL["stays"]) - 1)
+                         len(DATED) - 1)
 
     def test_the_countdown_is_not_frozen_into_the_page(self):
         """«Осталось N дней» в разметке — это число, верное ровно сутки.
@@ -653,7 +689,7 @@ class WhatCostsMoneyIsOnTop(unittest.TestCase):
     def test_a_deadline_that_is_not_the_earliest_on_top_is_caught(self):
         """Сборка обязана назвать ближайший срок вслух — иначе подмену не видно."""
         said = "\n".join(check(copy.deepcopy(REAL)))
-        self.assertIn("ближайший срок отмены: 2026-12-04", said)
+        self.assertIn("ближайший срок отмены: 2026-12-18", said)
 
     # ── переезды
 
@@ -906,7 +942,7 @@ class TheFlightIsShownOnceAndCountedOnce(unittest.TestCase):
             self.assertIn(self.fly["rules"][rule], ticket,
                           "штрафы за обмен и возврат она не вычёркивала")
         head = re.search(r'<details class="deadlines">(.*?)</details>', self.html, re.S).group(1)
-        self.assertEqual(head.count("data-deadline="), len(REAL["stays"]),
+        self.assertEqual(head.count("data-deadline="), len(DATED),
                          "сроки наверху — только отельные")
         for word in ("Turkish", "Ханэда", "Нарита"):
             self.assertNotIn(word, head, "перелёту срок не выдуман")
@@ -1073,7 +1109,7 @@ class TheRuler(unittest.TestCase):
                                   re.search(r'<div class="convert">(.*?)</div>\s*</div>',
                                             self.html, re.S).group(1), re.S).group(1).split())
         self.assertIn(str(REAL["fx"]["usd_per_jpy"]), said)
-        self.assertIn("августа 2026", said, "курс подписан датой")
+        self.assertIn(human_fx_date(), said, "курс подписан датой")
         self.assertIn("иенах", said, "сказано, чем она платит на самом деле")
         self.assertIn("округлено", said, "сказано, что доллар — мерка, а не точность")
 
