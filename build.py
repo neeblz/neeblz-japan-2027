@@ -120,8 +120,14 @@ def usd(amount: int) -> str:
 
 
 def money(amount: int) -> str:
-    """Доллар крупно, иена рядом справочно — её порядок, не наш."""
-    return (f'<b class="usd">{usd(amount)}</b>'
+    """Доллар крупно, иена рядом справочно — её порядок, не наш.
+
+    `data-yen` — та же сумма в иенах числом. Она нужна браузеру, когда курс
+    приезжает свежим: пересчитать доллар из иены он может, а вытащить иену
+    обратно из «$807» — нет. Иена здесь и есть настоящая цена, доллар всегда
+    производный.
+    """
+    return (f'<b class="usd" data-yen="{amount}">{usd(amount)}</b>'
             f'<span class="jpy">{yen(amount)}</span>')
 
 
@@ -1349,7 +1355,7 @@ def converter() -> str:
     <span class="fld"><i aria-hidden="true">$</i><input type="text" inputmode="decimal"
        data-conv="usd" aria-label="сумма в долларах" placeholder="0" autocomplete="off"></span>
   </div>
-  <p class="fx">$1 = ¥{FX["usd_per_jpy"]} на {fx_human_date()} · платится в иенах, округлено</p>
+  <p class="fx" data-fx="$1 = ¥{{rate}} на {{date}} · платится в иенах, округлено">$1 = ¥{FX["usd_per_jpy"]} на {fx_human_date()} · платится в иенах, округлено</p>
 </div>"""
 
 
@@ -1397,7 +1403,7 @@ def ledger(trip: dict, stays: list, all_legs: list) -> str:
        {slept} {plural(slept, "ночь", "ночи", "ночей")}</p>
     <p class="sum"><b class="usd" data-usd>${f"{usd_total:,}".replace(",", THIN)}</b>
        <span class="jpy" data-jpy>{yen(total)}</span></p>
-    <p class="fx">$1 = ¥{FX["usd_per_jpy"]} · курс на {fx_human_date()} · платится в иенах,
+    <p class="fx" data-fx="$1 = ¥{{rate}} · курс на {{date}} · платится в иенах, доллары округлены">$1 = ¥{FX["usd_per_jpy"]} · курс на {fx_human_date()} · платится в иенах,
        доллары округлены</p>
     {notall}
     <div class="bar" role="img" aria-label="как разделена оплата">
@@ -3510,7 +3516,12 @@ JS = """
   var ruler = document.querySelector(".convert");
   var island = document.getElementById("japan-data");
   if (ruler && island && window.JapanMoney) {
-    var fx = JSON.parse(island.textContent).fx;
+    /* Курс не запоминается разово: он может приехать свежим уже после того,
+       как страница нарисовалась (см. `FX_JS`). Поэтому берётся каждый раз
+       заново из одного общего места — иначе линейка считала бы по
+       вчерашнему, пока чек рядом показывает сегодняшний. */
+    window.JapanFx = window.JapanFx || JSON.parse(island.textContent).fx;
+    function fxNow(){ return window.JapanFx; }
     var THIN = "\\u202f";
     var jpyBox = ruler.querySelector('[data-conv="jpy"]');
     var usdBox = ruler.querySelector('[data-conv="usd"]');
@@ -3534,9 +3545,9 @@ JS = """
         to.value = v === null ? "" : group(convert(v));
       });
     }
-    link(jpyBox, usdBox, function(v){ return JapanMoney.toUsd(v, fx); });
+    link(jpyBox, usdBox, function(v){ return JapanMoney.toUsd(v, fxNow()); });
     link(usdBox, jpyBox, function(v){
-      return JapanMoney.yenOf({ amount: v, currency: "usd" }, fx);
+      return JapanMoney.yenOf({ amount: v, currency: "usd" }, fxNow());
     });
   }
 })();
@@ -3909,6 +3920,21 @@ APP_JS = """
     if (state.live) tell(storeSays, "");
   }
 
+  /* Курс приехал свежим уже после отрисовки. Чек считается из `data.fx`, так
+     что достаточно подменить его и перерисовать: своей арифметики здесь нет.
+
+     `housing.usd` пересчитывает не этот кусок, а `FX_JS` — и не из общей
+     иены, а сложением показанных городских долларов. Причина записана у
+     `ledger`: иначе четыре числа в столбик дают на доллар больше, чем итог
+     под ними, и это первое, что бросается в глаза. */
+  window.addEventListener("japan-fx", function(event){
+    var fresh = event.detail;
+    if (!fresh || !fresh.fx) return;
+    data.fx = fresh.fx;
+    if (typeof fresh.housingUsd === "number") data.housing.usd = fresh.housingUsd;
+    paint();
+  });
+
   /* ── форма */
 
   function fields(kind){
@@ -4048,6 +4074,79 @@ APP_JS = """
 
 
 # ─────────────────────────────────────────── её дни
+
+# Курс на сегодня. Страница нарисована с курсом, впечатанным сборкой, и это
+# честное число со своей датой. Здесь она спрашивает свежий и, если он приехал,
+# переписывает доллары — все сразу, из иены, тем же `money.js`.
+#
+# Ни, 10 сентября: «конвертер сделай так, чтобы он был привязан к дате
+# конвертации, сейчас там за август стоит».
+#
+# Ничего не спросилось — ничего и не меняется: остаётся впечатанный курс со
+# своей подписью. Показать вчерашнее число с вчерашней датой можно, с
+# сегодняшней — нет.
+FX_JS = """
+(function(){
+  "use strict";
+  var box = document.getElementById("japan-data");
+  if (!box || !window.JapanMoney || !window.fetch) return;
+  window.JapanFx = window.JapanFx || JSON.parse(box.textContent).fx;
+
+  var THIN = "\u202f";
+  function group(n){
+    return String(n).replace(/\B(?=(\d{3})+(?!\d))/g, THIN);
+  }
+
+  /* Доллар пересчитывается из иены, а не из доллара: обратный пересчёт
+     «$807 → ¥ → $» на другом курсе даёт третье число, не равное ни одному
+     из двух. Иена рядом — настоящая цена, она не трогается вовсе. */
+  function repaint(fx){
+    var cities = 0;
+    Array.prototype.forEach.call(document.querySelectorAll("[data-yen]"), function(node){
+      var yen = Number(node.getAttribute("data-yen"));
+      if (!isFinite(yen)) return;
+      node.textContent = "$" + group(JapanMoney.toUsd(yen, fx));
+      if (node.parentNode && node.parentNode.className === "price") {
+        cities += JapanMoney.toUsd(yen, fx);
+      }
+    });
+    return cities;
+  }
+
+  /* Подпись печатается по образцу из разметки, а не собирается здесь заново:
+     слова про «платится в иенах» живут в сборке, и второе их написание
+     разошлось бы с первым в первый же день. */
+  function caption(fx){
+    Array.prototype.forEach.call(document.querySelectorAll("[data-fx]"), function(node){
+      var pattern = node.getAttribute("data-fx");
+      if (!pattern) return;
+      node.textContent = pattern
+        .replace("{rate}", String(fx.usd_per_jpy))
+        .replace("{date}", fx.human || fx.as_of || "");
+    });
+  }
+
+  fetch("/api/fx", { headers: { accept: "application/json" } })
+    .then(function(answer){ return answer.json(); })
+    .then(function(said){
+      if (!said || !said.ok || !said.fx) return;
+      var fresh = said.fx;
+      if (!(fresh.usd_per_jpy > 0)) return;
+      /* Тот же курс, что уже стоит, — это не новость: перерисовывать нечего,
+         и лишняя перерисовка чека сбросила бы её раскрытые «подробнее». */
+      if (fresh.usd_per_jpy === window.JapanFx.usd_per_jpy
+          && fresh.as_of === window.JapanFx.as_of) return;
+      window.JapanFx = fresh;
+      var cities = repaint(fresh);
+      caption(fresh);
+      window.dispatchEvent(new CustomEvent("japan-fx", {
+        detail: { fx: fresh, housingUsd: cities },
+      }));
+    })
+    .catch(function(){ /* курс не приехал — страница остаётся на впечатанном */ });
+})();
+"""
+
 
 DAYS_JS = """
 (function(){
@@ -4697,6 +4796,7 @@ def render(trip: dict, plan: list | None = None) -> str:
 <script>{MONEY_JS}
 {JS}
 {APP_JS}
+{FX_JS}
 {DAYS_JS}</script>
 </body>
 </html>

@@ -456,7 +456,7 @@ class PageShowsIt(unittest.TestCase):
         def dollars(pattern):
             return [int(re.sub(r"\s", "", x)) for x in re.findall(pattern, self.html)]
 
-        cities = dollars(r'<p class="price">\s*<b class="usd">\$([\d\s]+)</b>')
+        cities = dollars(r'<p class="price">\s*<b class="usd"[^>]*>\$([\d\s]+)</b>')
         total = dollars(r'<b class="usd" data-usd>\$([\d\s]+)</b>')
         self.assertEqual(len(cities), 4, cities)
         self.assertEqual(len(total), 1, "итог за жильё на странице один")
@@ -589,7 +589,7 @@ class SheWritesHereHerself(unittest.TestCase):
         self.assertEqual(housing["paid"] + housing["upcoming"] + housing["onsite"],
                          housing["jpy"], "разбивка обязана сойтись с итогом")
         shown = [int(re.sub(r"\s", "", x)) for x in
-                 re.findall(r'<p class="price">\s*<b class="usd">\$([\d\s]+)</b>', self.html)]
+                 re.findall(r'<p class="price">\s*<b class="usd"[^>]*>\$([\d\s]+)</b>', self.html)]
         self.assertEqual(housing["usd"], sum(shown),
                          "доллар итога — сумма показанных городских долларов")
         self.assertEqual(self.island["fx"]["usd_per_jpy"], REAL["fx"]["usd_per_jpy"])
@@ -671,6 +671,58 @@ class WhatCostsMoneyIsOnTop(unittest.TestCase):
             self.assertIn(s["cancel"]["free_until"], head.group(1), s["name"])
         self.assertEqual(head.group(1).count("<li data-deadline="),
                          len(DATED) - 1)
+
+    def test_every_dollar_carries_the_yen_it_came_from(self):
+        """Доллар на странице производный, иена — настоящая цена.
+
+        Курс приезжает свежим уже после отрисовки, и браузер пересчитывает
+        доллары сам. Пересчитать он может только из иены: вытащить её обратно
+        из «$807» нельзя — там уже округлено. Поэтому каждая пара несёт число
+        рядом, и это проверяется, а не подразумевается.
+        """
+        pairs = re.findall(
+            r'<b class="usd"([^>]*)>\$([\d\s\u202f]+)</b>'
+            r'<span class="jpy">([^<]+)</span>', self.html)
+        self.assertTrue(pairs, "пар «доллар + иена» на странице нет вовсе")
+        for attrs, shown_usd, shown_jpy in pairs:
+            got = re.search(r'data-yen="(\d+)"', attrs)
+            self.assertIsNotNone(got, f"пара без data-yen: {shown_usd} / {shown_jpy}")
+            yen_number = int(got.group(1))
+            self.assertEqual(yen_number, int(re.sub(r"\D", "", shown_jpy)),
+                             "data-yen обязан совпасть с иеной, которая рядом")
+            rate = REAL["fx"]["usd_per_jpy"]
+            self.assertEqual(int(re.sub(r"\D", "", shown_usd)), round(yen_number / rate),
+                             "доллар посчитан не тем курсом, что лежит в данных")
+
+    def test_the_rate_caption_keeps_its_own_wording(self):
+        """Подпись под курсом переписывается браузером по образцу из разметки.
+
+        Слова про «платится в иенах» живут в сборке. Если бы браузер собирал
+        подпись заново своими словами, два написания разошлись бы в первый же
+        день, когда курс приехал свежим, — и на странице оказалось бы две
+        разные фразы об одном и том же.
+        """
+        patterns = re.findall(r'data-fx="([^"]+)"', self.html)
+        self.assertEqual(len(patterns), 2, "подписи две: у чека и у линейки")
+        for pattern in patterns:
+            self.assertIn("{rate}", pattern)
+            self.assertIn("{date}", pattern)
+            self.assertIn("иенах", pattern, "чем она платит на самом деле")
+
+    def test_the_page_asks_for_a_fresh_rate(self):
+        """Страница спрашивает курс сама — иначе он замерзает в сборке.
+
+        Ни, 10 сентября: «сейчас там за август стоит». Проверяется не только
+        сам запрос, но и то, что отказ ручки ничего не ломает: при неудаче
+        страница обязана остаться на впечатанном курсе со своей датой, а не
+        показать пустоту или чужое число без подписи.
+        """
+        self.assertIn('fetch("/api/fx"', self.html, "курс не спрашивается вовсе")
+        self.assertIn("japan-fx", self.html, "чек не узнаёт о свежем курсе")
+        script = self.html[self.html.index('fetch("/api/fx"'):]
+        self.assertIn("catch", script[:1200], "отказ ручки обязан быть пойман")
+        self.assertIn(str(REAL["fx"]["usd_per_jpy"]), self.html,
+                      "впечатанный курс остаётся на странице как запасной")
 
     def test_the_countdown_is_not_frozen_into_the_page(self):
         """«Осталось N дней» в разметке — это число, верное ровно сутки.
@@ -1105,7 +1157,7 @@ class TheRuler(unittest.TestCase):
 
     def test_the_caption_under_the_fields_is_honest(self):
         """Курс, дата и то, что платит она в иенах, — под самими полями."""
-        said = " ".join(re.search(r'<p class="fx">(.*?)</p>',
+        said = " ".join(re.search(r'<p class="fx"[^>]*>(.*?)</p>',
                                   re.search(r'<div class="convert">(.*?)</div>\s*</div>',
                                             self.html, re.S).group(1), re.S).group(1).split())
         self.assertIn(str(REAL["fx"]["usd_per_jpy"]), said)
